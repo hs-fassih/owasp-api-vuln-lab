@@ -3,5 +3,5 @@
 
 
 # ignoring the build output
-target/classes/
-target/test-classes/
+/target/classes/
+/target/test-classes/
