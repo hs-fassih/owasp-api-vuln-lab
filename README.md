@@ -1,7 +1,7 @@
 # OWASP API Vulnerable Lab (Spring Boot + JWT)
 
 > This project intentionally contains vulnerabilities mapped to **OWASP API Security Top 10 (2023)** 
-> so students can identify and fix them.
+> so learners can identify and fix them.
 
 ## Quick Start
 
@@ -41,7 +41,7 @@ curl -H "Authorization: Bearer $T" http://localhost:8080/api/accounts/mine
 - **API9: Improper Inventory / Injection-like search**
 - **API10: Unsafe Consumption of APIs** (discussion prompt)
 
-## Student Tasks (Fixes)
+## Required Tasks (Fixes)
 1. Replace plaintext passwords with BCrypt; add signup flow and migrate existing seeds.
 2. Tighten `SecurityFilterChain`: remove `permitAll` on `/api/**`, require auth; enforce role checks.
 3. In controllers, enforce ownership: user can only access their own resources (map subject -> userId).
