@@ -1,11 +1,12 @@
 # OWASP API Vulnerable Lab (Spring Boot + JWT)
 
-> This project intentionally contains vulnerabilities mapped to **OWASP API Security Top 10 (2023)** 
+> This project intentionally contains vulnerabilities mapped to **OWASP API Security Top 10 (2023)**
 > so students can identify and fix them.
 
 ## Quick Start
 
 ```bash
+Hello
 # Java 17 + Maven required
 mvn spring-boot:run
 # H2 Console: http://localhost:8080/h2-console (JDBC URL: jdbc:h2:mem:apilab)
@@ -17,12 +18,14 @@ mvn spring-boot:run
 - `bob / bob123` (ADMIN)
 
 Login to get a JWT:
+
 ```bash
 curl -s -X POST http://localhost:8080/api/auth/login -H 'Content-Type: application/json' -d '{"username":"alice","password":"alice123"}'
 # => {"token":"<JWT>"}
 ```
 
 Use the token:
+
 ```bash
 export T="<JWT>"
 curl -H "Authorization: Bearer $T" http://localhost:8080/api/accounts/mine
@@ -42,6 +45,7 @@ curl -H "Authorization: Bearer $T" http://localhost:8080/api/accounts/mine
 - **API10: Unsafe Consumption of APIs** (discussion prompt)
 
 ## Student Tasks (Fixes)
+
 1. Replace plaintext passwords with BCrypt; add signup flow and migrate existing seeds.
 2. Tighten `SecurityFilterChain`: remove `permitAll` on `/api/**`, require auth; enforce role checks.
 3. In controllers, enforce ownership: user can only access their own resources (map subject -> userId).
@@ -54,4 +58,5 @@ curl -H "Authorization: Bearer $T" http://localhost:8080/api/accounts/mine
 10. Add integration tests to capture fixed behavior.
 
 ## Notes
+
 - Keep a list of fixes and submit a PR describing how each vulnerability was addressed.
