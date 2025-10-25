@@ -2,6 +2,6 @@
 # fixes_made.md
 
 
-# ignoring build output
+# ignoring the build output
 target/classes/
 target/test-classes/
