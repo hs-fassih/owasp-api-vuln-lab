@@ -44,12 +44,7 @@ curl -H "Authorization: Bearer $T" http://localhost:8080/api/accounts/mine
 - **API9: Improper Inventory / Injection-like search**
 - **API10: Unsafe Consumption of APIs** (discussion prompt)
 
-<<<<<<< HEAD
 ## Required Tasks (Fixes)
-=======
-## Student Tasks (Fixes)
-
->>>>>>> 5c2d07dec33d6f3b4bcbae3b4126d6e7d5a150b5
 1. Replace plaintext passwords with BCrypt; add signup flow and migrate existing seeds.
 2. Tighten `SecurityFilterChain`: remove `permitAll` on `/api/**`, require auth; enforce role checks.
 3. In controllers, enforce ownership: user can only access their own resources (map subject -> userId).
