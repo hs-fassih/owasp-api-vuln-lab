@@ -13,6 +13,9 @@ import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
+// FIX(Task 1): Import BCryptPasswordEncoder for password hashing
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.filter.OncePerRequestFilter;
 import io.jsonwebtoken.*;
@@ -25,6 +28,13 @@ public class SecurityConfig {
 
     @Value("${app.jwt.secret}")
     private String secret;
+
+    // FIX(Task 1): Add PasswordEncoder bean for BCrypt password hashing
+    // This replaces plaintext password storage with secure BCrypt hashes
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
 
     // VULNERABILITY(API7 Security Misconfiguration): overly permissive CORS/CSRF and antMatchers order
     @Bean
