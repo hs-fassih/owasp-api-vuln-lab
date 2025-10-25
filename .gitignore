@@ -1,5 +1,7 @@
 # uncomment the 2nd line to ignore fixes_made.md 
 # fixes_made.md
 
-# ignoring compiled class files
-*.class
+
+# ignoring build output
+target/classes/
+target/test-classes/
