@@ -3,6 +3,7 @@
 ## Table of Contents
 1. [Task 1: Replace Plaintext Passwords with BCrypt](#task-1-replace-plaintext-passwords-with-bcrypt)
 2. [Task 2: Tighten SecurityFilterChain](#task-2-tighten-securityfilterchain)
+3. [Task 3: Enforce Ownership in Controllers](#task-3-enforce-ownership-in-controllers)
 
 ---
 
@@ -723,3 +724,670 @@ Request → JWT Filter (rejects invalid) → authenticated /api/** → Controlle
 **Fix Completed:** ✅ Task 2 - Tighten SecurityFilterChain  
 **Date:** October 26, 2025  
 **Security Level:** HIGH PRIORITY - Critical authorization and authentication vulnerability fixed
+
+---
+
+## Task 3: Enforce Ownership in Controllers
+
+### Overview
+Fixed the API1 Broken Object Level Authorization (BOLA/IDOR) vulnerability by implementing ownership verification in all controllers. Users can now only access and modify their own resources, preventing unauthorized access to other users' data.
+
+### Vulnerability Description
+**OWASP API Security Category:** API1 - Broken Object Level Authorization (BOLA/IDOR)
+
+**Original Issues:**
+
+1. **AccountController.balance()**: Any authenticated user could view any account balance by ID
+   - Example: User with ID 1 could access `/api/accounts/2/balance` (User 2's account)
+   - No verification that the account belongs to the authenticated user
+
+2. **AccountController.transfer()**: Any authenticated user could transfer money from any account
+   - Example: User could transfer money from someone else's account
+   - No ownership verification before performing transfers
+   - No input validation on transfer amounts (negative, zero, excessive)
+
+3. **UserController.get()**: Any authenticated user could view any other user's profile
+   - Example: User could access `/api/users/2` to view another user's details
+   - Exposed sensitive information like passwords, roles, admin flags
+
+4. **UserController.delete()**: Regular users could delete any user account
+   - No admin privilege check
+   - Users could delete administrators or other users
+   - No protection against self-deletion
+
+### Changes Made
+
+#### 1. AccountController.java
+
+##### a) balance() Method - Added Ownership Verification
+
+**Location:** `src/main/java/edu/nu/owaspapivulnlab/web/AccountController.java`
+
+**Before (VULNERABLE):**
+```java
+@GetMapping("/{id}/balance")
+public Double balance(@PathVariable Long id) {
+    Account a = accounts.findById(id).orElseThrow(() -> new RuntimeException("Account not found"));
+    return a.getBalance();
+}
+```
+
+**After (SECURE):**
+```java
+@GetMapping("/{id}/balance")
+public ResponseEntity<?> balance(@PathVariable Long id, Authentication auth) {
+    // FIX(Task 3): Check if user is authenticated
+    if (auth == null) {
+        Map<String, String> error = new HashMap<>();
+        error.put("error", "Authentication required");
+        return ResponseEntity.status(401).body(error);
+    }
+    
+    // FIX(Task 3): Get the authenticated user
+    AppUser currentUser = users.findByUsername(auth.getName())
+            .orElseThrow(() -> new RuntimeException("User not found"));
+    
+    // FIX(Task 3): Get the account and verify it exists
+    Account account = accounts.findById(id)
+            .orElseThrow(() -> new RuntimeException("Account not found"));
+    
+    // FIX(Task 3): Verify ownership - prevent BOLA/IDOR
+    if (!account.getOwnerUserId().equals(currentUser.getId())) {
+        Map<String, String> error = new HashMap<>();
+        error.put("error", "Access denied - you can only view your own accounts");
+        return ResponseEntity.status(403).body(error);
+    }
+    
+    // Return balance in a structured response
+    Map<String, Object> response = new HashMap<>();
+    response.put("accountId", account.getId());
+    response.put("balance", account.getBalance());
+    return ResponseEntity.ok(response);
+}
+```
+
+**Security Improvements:**
+- ✅ Injects `Authentication` parameter to get authenticated user
+- ✅ Verifies user is authenticated (returns 401 if not)
+- ✅ Retrieves authenticated user from database via username
+- ✅ Verifies account ownership by comparing `ownerUserId` with current user's ID
+- ✅ Returns 403 Forbidden if user tries to access another's account
+- ✅ Returns structured JSON response instead of raw Double
+
+**Example Attack Prevented:**
+```bash
+# Alice (user ID 1) tries to view Bob's account (ID 2)
+curl -H "Authorization: Bearer $ALICE_TOKEN" http://localhost:8080/api/accounts/2/balance
+# Before: Shows Bob's balance ❌
+# After: 403 {"error":"Access denied - you can only view your own accounts"} ✅
+```
+
+---
+
+##### b) transfer() Method - Added Ownership & Input Validation
+
+**Location:** `src/main/java/edu/nu/owaspapivulnlab/web/AccountController.java`
+
+**Before (VULNERABLE):**
+```java
+@PostMapping("/{id}/transfer")
+public ResponseEntity<?> transfer(@PathVariable Long id, @RequestParam Double amount) {
+    Account a = accounts.findById(id).orElseThrow(() -> new RuntimeException("Account not found"));
+    a.setBalance(a.getBalance() - amount);
+    accounts.save(a);
+    Map<String, Object> response = new HashMap<>();
+    response.put("status", "ok");
+    response.put("remaining", a.getBalance());
+    return ResponseEntity.ok(response);
+}
+```
+
+**After (SECURE):**
+```java
+@PostMapping("/{id}/transfer")
+public ResponseEntity<?> transfer(@PathVariable Long id, @RequestParam Double amount, Authentication auth) {
+    // FIX(Task 3): Check if user is authenticated
+    if (auth == null) {
+        Map<String, String> error = new HashMap<>();
+        error.put("error", "Authentication required");
+        return ResponseEntity.status(401).body(error);
+    }
+    
+    // FIX(Task 9): Validate transfer amount
+    if (amount == null || amount <= 0) {
+        Map<String, String> error = new HashMap<>();
+        error.put("error", "Amount must be positive");
+        return ResponseEntity.status(400).body(error);
+    }
+    
+    // FIX(Task 9): Reject excessively large transfers
+    if (amount > 1000000) {
+        Map<String, String> error = new HashMap<>();
+        error.put("error", "Amount exceeds maximum transfer limit of 1,000,000");
+        return ResponseEntity.status(400).body(error);
+    }
+    
+    // FIX(Task 3): Get the authenticated user
+    AppUser currentUser = users.findByUsername(auth.getName())
+            .orElseThrow(() -> new RuntimeException("User not found"));
+    
+    // FIX(Task 3): Get the account and verify it exists
+    Account account = accounts.findById(id)
+            .orElseThrow(() -> new RuntimeException("Account not found"));
+    
+    // FIX(Task 3): Verify ownership - prevent BOLA/IDOR
+    if (!account.getOwnerUserId().equals(currentUser.getId())) {
+        Map<String, String> error = new HashMap<>();
+        error.put("error", "Access denied - you can only transfer from your own accounts");
+        return ResponseEntity.status(403).body(error);
+    }
+    
+    // FIX(Task 9): Check sufficient balance
+    if (account.getBalance() < amount) {
+        Map<String, String> error = new HashMap<>();
+        error.put("error", "Insufficient balance");
+        error.put("available", String.valueOf(account.getBalance()));
+        return ResponseEntity.status(400).body(error);
+    }
+    
+    // Perform transfer
+    account.setBalance(account.getBalance() - amount);
+    accounts.save(account);
+    
+    Map<String, Object> response = new HashMap<>();
+    response.put("status", "ok");
+    response.put("remaining", account.getBalance());
+    response.put("transferred", amount);
+    return ResponseEntity.ok(response);
+}
+```
+
+**Security Improvements:**
+- ✅ Authentication verification (401 if not authenticated)
+- ✅ **Task 9: Input validation for amount (must be positive)**
+- ✅ **Task 9: Maximum transfer limit (1,000,000)**
+- ✅ Ownership verification (403 if accessing another's account)
+- ✅ **Task 9: Sufficient balance check**
+- ✅ Structured response with transfer details
+
+**Example Attacks Prevented:**
+
+1. **BOLA Attack:**
+```bash
+# Alice tries to transfer from Bob's account
+curl -X POST "http://localhost:8080/api/accounts/2/transfer?amount=100" \
+  -H "Authorization: Bearer $ALICE_TOKEN"
+# Before: Transfers money from Bob's account ❌
+# After: 403 {"error":"Access denied - you can only transfer from your own accounts"} ✅
+```
+
+2. **Negative Transfer Attack:**
+```bash
+# Try to add money via negative transfer
+curl -X POST "http://localhost:8080/api/accounts/1/transfer?amount=-1000" \
+  -H "Authorization: Bearer $ALICE_TOKEN"
+# Before: Adds money to account ❌
+# After: 400 {"error":"Amount must be positive"} ✅
+```
+
+3. **Overdraft Attack:**
+```bash
+# Try to transfer more than available balance
+curl -X POST "http://localhost:8080/api/accounts/1/transfer?amount=999999" \
+  -H "Authorization: Bearer $ALICE_TOKEN"
+# Before: Creates negative balance ❌
+# After: 400 {"error":"Insufficient balance","available":"1000.0"} ✅
+```
+
+---
+
+#### 2. UserController.java
+
+##### a) get() Method - Added Ownership Verification
+
+**Location:** `src/main/java/edu/nu/owaspapivulnlab/web/UserController.java`
+
+**Before (VULNERABLE):**
+```java
+@GetMapping("/{id}")
+public AppUser get(@PathVariable Long id) {
+    return users.findById(id).orElseThrow(() -> new RuntimeException("User not found"));
+}
+```
+
+**After (SECURE):**
+```java
+@GetMapping("/{id}")
+public ResponseEntity<?> get(@PathVariable Long id, Authentication auth) {
+    // FIX(Task 3): Check if user is authenticated
+    if (auth == null) {
+        Map<String, String> error = new HashMap<>();
+        error.put("error", "Authentication required");
+        return ResponseEntity.status(401).body(error);
+    }
+    
+    // FIX(Task 3): Get the authenticated user
+    AppUser currentUser = users.findByUsername(auth.getName())
+            .orElseThrow(() -> new RuntimeException("User not found"));
+    
+    // FIX(Task 3): Verify ownership or admin privilege
+    if (!currentUser.getId().equals(id) && !currentUser.isAdmin()) {
+        Map<String, String> error = new HashMap<>();
+        error.put("error", "Access denied - you can only view your own profile");
+        return ResponseEntity.status(403).body(error);
+    }
+    
+    // Get the requested user
+    AppUser user = users.findById(id)
+            .orElseThrow(() -> new RuntimeException("User not found"));
+    
+    // TODO(Task 4): Return DTO instead of full entity to avoid exposing sensitive data
+    return ResponseEntity.ok(user);
+}
+```
+
+**Security Improvements:**
+- ✅ Authentication verification
+- ✅ Ownership verification: users can only view their own profile
+- ✅ Admin privilege: admins can view any profile
+- ✅ 403 Forbidden for unauthorized access
+- ✅ Note: Still returns full entity (Task 4 will fix data exposure)
+
+**Example Attack Prevented:**
+```bash
+# Regular user Alice tries to view Bob's profile
+curl -H "Authorization: Bearer $ALICE_TOKEN" http://localhost:8080/api/users/2
+# Before: Shows Bob's full profile including password ❌
+# After: 403 {"error":"Access denied - you can only view your own profile"} ✅
+```
+
+---
+
+##### b) delete() Method - Added Admin-Only Authorization
+
+**Location:** `src/main/java/edu/nu/owaspapivulnlab/web/UserController.java`
+
+**Before (VULNERABLE):**
+```java
+@DeleteMapping("/{id}")
+public ResponseEntity<?> delete(@PathVariable Long id) {
+    users.deleteById(id);
+    Map<String, String> response = new HashMap<>();
+    response.put("status", "deleted");
+    return ResponseEntity.ok(response);
+}
+```
+
+**After (SECURE):**
+```java
+@DeleteMapping("/{id}")
+public ResponseEntity<?> delete(@PathVariable Long id, Authentication auth) {
+    // FIX(Task 3): Check if user is authenticated
+    if (auth == null) {
+        Map<String, String> error = new HashMap<>();
+        error.put("error", "Authentication required");
+        return ResponseEntity.status(401).body(error);
+    }
+    
+    // FIX(Task 3): Get the authenticated user
+    AppUser currentUser = users.findByUsername(auth.getName())
+            .orElseThrow(() -> new RuntimeException("User not found"));
+    
+    // FIX(Task 3): Only admins can delete users
+    if (!currentUser.isAdmin()) {
+        Map<String, String> error = new HashMap<>();
+        error.put("error", "Access denied - admin privileges required");
+        return ResponseEntity.status(403).body(error);
+    }
+    
+    // FIX(Task 3): Prevent admins from deleting themselves
+    if (currentUser.getId().equals(id)) {
+        Map<String, String> error = new HashMap<>();
+        error.put("error", "You cannot delete your own account");
+        return ResponseEntity.status(400).body(error);
+    }
+    
+    // Verify user exists before deletion
+    if (!users.existsById(id)) {
+        Map<String, String> error = new HashMap<>();
+        error.put("error", "User not found");
+        return ResponseEntity.status(404).body(error);
+    }
+    
+    users.deleteById(id);
+    Map<String, String> response = new HashMap<>();
+    response.put("status", "deleted");
+    response.put("message", "User successfully deleted");
+    return ResponseEntity.ok(response);
+}
+```
+
+**Security Improvements:**
+- ✅ Authentication verification
+- ✅ **Admin-only access** (prevents privilege escalation)
+- ✅ **Self-deletion prevention** (admins can't delete themselves)
+- ✅ Existence check before deletion (proper 404 handling)
+- ✅ Detailed error messages for different scenarios
+
+**Example Attacks Prevented:**
+
+1. **Regular User Deletion Attack:**
+```bash
+# Regular user Alice tries to delete Bob
+curl -X DELETE http://localhost:8080/api/users/2 \
+  -H "Authorization: Bearer $ALICE_TOKEN"
+# Before: Deletes Bob ❌
+# After: 403 {"error":"Access denied - admin privileges required"} ✅
+```
+
+2. **Self-Deletion Attack:**
+```bash
+# Admin Bob tries to delete himself
+curl -X DELETE http://localhost:8080/api/users/2 \
+  -H "Authorization: Bearer $BOB_ADMIN_TOKEN"
+# Before: Deletes the admin account ❌
+# After: 400 {"error":"You cannot delete your own account"} ✅
+```
+
+---
+
+### Security Benefits
+
+1. **Broken Object Level Authorization (BOLA) Fixed:**
+   - Users can only access resources they own
+   - Ownership verification on every sensitive operation
+   - Prevents horizontal privilege escalation
+
+2. **Input Validation (Partial Task 9):**
+   - Transfer amounts must be positive
+   - Maximum transfer limits enforced
+   - Sufficient balance checks prevent overdrafts
+   - Prevents negative balance exploits
+
+3. **Function Level Authorization:**
+   - Admin privileges verified for privileged operations
+   - Prevents regular users from performing admin actions
+   - Prevents vertical privilege escalation
+
+4. **Defense in Depth:**
+   - Multiple security checks (authentication → ownership → authorization)
+   - Proper HTTP status codes (401, 403, 400, 404)
+   - Clear error messages for security issues
+
+5. **Self-Protection:**
+   - Admins cannot delete themselves (operational safety)
+   - Existence checks prevent errors
+
+### Testing the Fix
+
+#### Test 1: Verify BOLA Protection on Account Balance
+
+**Setup:**
+```powershell
+# Login as Alice
+$alice = (curl -X POST http://localhost:8080/api/auth/login `
+  -H "Content-Type: application/json" `
+  -d '{"username":"alice","password":"alice123"}' | ConvertFrom-Json)
+
+# Login as Bob
+$bob = (curl -X POST http://localhost:8080/api/auth/login `
+  -H "Content-Type: application/json" `
+  -d '{"username":"bob","password":"bob123"}' | ConvertFrom-Json)
+```
+
+**Test Alice accessing her own account (should work):**
+```powershell
+curl -X GET http://localhost:8080/api/accounts/1/balance `
+  -H "Authorization: Bearer $($alice.token)"
+```
+
+**Expected Response:**
+```json
+{
+  "accountId": 1,
+  "balance": 1000.0
+}
+```
+
+**Test Alice accessing Bob's account (should fail):**
+```powershell
+curl -X GET http://localhost:8080/api/accounts/2/balance `
+  -H "Authorization: Bearer $($alice.token)"
+```
+
+**Expected Response:**
+```
+HTTP 403 Forbidden
+{
+  "error": "Access denied - you can only view your own accounts"
+}
+```
+
+---
+
+#### Test 2: Verify BOLA Protection on Transfers
+
+**Test Alice transferring from her account (should work):**
+```powershell
+curl -X POST "http://localhost:8080/api/accounts/1/transfer?amount=50" `
+  -H "Authorization: Bearer $($alice.token)"
+```
+
+**Expected Response:**
+```json
+{
+  "status": "ok",
+  "remaining": 950.0,
+  "transferred": 50.0
+}
+```
+
+**Test Alice transferring from Bob's account (should fail):**
+```powershell
+curl -X POST "http://localhost:8080/api/accounts/2/transfer?amount=100" `
+  -H "Authorization: Bearer $($alice.token)"
+```
+
+**Expected Response:**
+```
+HTTP 403 Forbidden
+{
+  "error": "Access denied - you can only transfer from your own accounts"
+}
+```
+
+---
+
+#### Test 3: Verify Input Validation on Transfers
+
+**Test negative amount:**
+```powershell
+curl -X POST "http://localhost:8080/api/accounts/1/transfer?amount=-100" `
+  -H "Authorization: Bearer $($alice.token)"
+```
+
+**Expected Response:**
+```
+HTTP 400 Bad Request
+{
+  "error": "Amount must be positive"
+}
+```
+
+**Test excessive amount:**
+```powershell
+curl -X POST "http://localhost:8080/api/accounts/1/transfer?amount=2000000" `
+  -H "Authorization: Bearer $($alice.token)"
+```
+
+**Expected Response:**
+```
+HTTP 400 Bad Request
+{
+  "error": "Amount exceeds maximum transfer limit of 1,000,000"
+}
+```
+
+**Test insufficient balance:**
+```powershell
+curl -X POST "http://localhost:8080/api/accounts/1/transfer?amount=5000" `
+  -H "Authorization: Bearer $($alice.token)"
+```
+
+**Expected Response:**
+```
+HTTP 400 Bad Request
+{
+  "error": "Insufficient balance",
+  "available": "1000.0"
+}
+```
+
+---
+
+#### Test 4: Verify User Profile Access Control
+
+**Test Alice viewing her own profile (should work):**
+```powershell
+curl -X GET http://localhost:8080/api/users/1 `
+  -H "Authorization: Bearer $($alice.token)"
+```
+
+**Expected Response:**
+```json
+{
+  "id": 1,
+  "username": "alice",
+  "email": "alice@cydea.tech",
+  "role": "USER",
+  "isAdmin": false
+  // Note: password still exposed (Task 4 will fix)
+}
+```
+
+**Test Alice viewing Bob's profile (should fail):**
+```powershell
+curl -X GET http://localhost:8080/api/users/2 `
+  -H "Authorization: Bearer $($alice.token)"
+```
+
+**Expected Response:**
+```
+HTTP 403 Forbidden
+{
+  "error": "Access denied - you can only view your own profile"
+}
+```
+
+**Test Admin Bob viewing Alice's profile (should work):**
+```powershell
+curl -X GET http://localhost:8080/api/users/1 `
+  -H "Authorization: Bearer $($bob.token)"
+```
+
+**Expected Response:**
+```json
+{
+  "id": 1,
+  "username": "alice",
+  ...
+}
+```
+
+---
+
+#### Test 5: Verify Delete Authorization
+
+**Test regular user Alice deleting Bob (should fail):**
+```powershell
+curl -X DELETE http://localhost:8080/api/users/2 `
+  -H "Authorization: Bearer $($alice.token)"
+```
+
+**Expected Response:**
+```
+HTTP 403 Forbidden
+{
+  "error": "Access denied - admin privileges required"
+}
+```
+
+**Test admin Bob deleting himself (should fail):**
+```powershell
+curl -X DELETE http://localhost:8080/api/users/2 `
+  -H "Authorization: Bearer $($bob.token)"
+```
+
+**Expected Response:**
+```
+HTTP 400 Bad Request
+{
+  "error": "You cannot delete your own account"
+}
+```
+
+**Test admin Bob deleting Alice (should work):**
+```powershell
+curl -X DELETE http://localhost:8080/api/users/1 `
+  -H "Authorization: Bearer $($bob.token)"
+```
+
+**Expected Response:**
+```json
+{
+  "status": "deleted",
+  "message": "User successfully deleted"
+}
+```
+
+---
+
+### Comparison: Before vs After
+
+| Scenario | Before (Vulnerable) | After (Fixed) |
+|----------|-------------------|---------------|
+| Alice views Alice's account balance | ✅ Allowed | ✅ Allowed |
+| Alice views Bob's account balance | ✅ Allowed ❌ | ❌ 403 Forbidden ✅ |
+| Alice transfers from Alice's account | ✅ Allowed | ✅ Allowed |
+| Alice transfers from Bob's account | ✅ Allowed ❌ | ❌ 403 Forbidden ✅ |
+| Negative transfer amount | ✅ Allowed ❌ | ❌ 400 Bad Request ✅ |
+| Transfer > 1,000,000 | ✅ Allowed ❌ | ❌ 400 Bad Request ✅ |
+| Transfer > balance | ✅ Allowed ❌ | ❌ 400 Bad Request ✅ |
+| Alice views Alice's profile | ✅ Allowed | ✅ Allowed |
+| Alice views Bob's profile | ✅ Allowed ❌ | ❌ 403 Forbidden ✅ |
+| Admin Bob views Alice's profile | ✅ Allowed | ✅ Allowed |
+| Alice deletes Bob | ✅ Allowed ❌ | ❌ 403 Forbidden ✅ |
+| Admin Bob deletes Alice | ✅ Allowed | ✅ Allowed |
+| Admin Bob deletes himself | ✅ Allowed ❌ | ❌ 400 Bad Request ✅ |
+
+---
+
+### Remaining Vulnerabilities (Future Tasks)
+
+While Task 3 fixes ownership and authorization, the following issues remain:
+
+1. **Excessive Data Exposure** - User profiles still return sensitive fields like password, role, isAdmin (Task 4)
+2. **No Rate Limiting** - Still vulnerable to brute force and DoS (Task 5)
+3. **Mass Assignment** - User creation still vulnerable (Task 6)
+4. **Weak JWT** - Token configuration still needs hardening (Task 7)
+5. **Verbose Errors** - Error messages too detailed for production (Task 8)
+
+These will be addressed in subsequent tasks.
+
+---
+
+### Files Modified Summary
+
+1. ✅ `AccountController.java`
+   - `balance()` - Added ownership verification
+   - `transfer()` - Added ownership verification + input validation
+
+2. ✅ `UserController.java`
+   - `get()` - Added ownership verification (users/admins)
+   - `delete()` - Added admin-only authorization + self-deletion prevention
+
+---
+
+**Fix Completed:** ✅ Task 3 - Enforce Ownership in Controllers  
+**Date:** October 26, 2025  
+**Security Level:** CRITICAL - BOLA/IDOR vulnerability fixed, prevents unauthorized resource access
