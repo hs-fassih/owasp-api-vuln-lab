@@ -19,9 +19,12 @@ public class AppUser {
     @NotBlank
     private String password;
 
-    // FIXED VULNERABILITY IN USER CONTROLLER:using DTO and setting role/isAdmin manually VULNERABILITY(API6: Mass Assignment): role and isAdmin are bindable via incoming JSON
-    private String role;   // e.g., "USER" or "ADMIN"
-    private boolean isAdmin;
+    // FIX(Task 6): Mass Assignment Protection
+    // These fields (role, isAdmin) are NOT exposed in CreateUserRequest DTO
+    // Server-side code explicitly sets these values to prevent privilege escalation
+    // VULNERABILITY FIXED: Clients can no longer send {"role":"ADMIN","isAdmin":true} in POST requests
+    private String role;   // e.g., "USER" or "ADMIN" - server controlled
+    private boolean isAdmin; // Server controlled - cannot be set via API
 
     @Email
     private String email;

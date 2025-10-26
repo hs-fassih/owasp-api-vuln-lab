@@ -63,25 +63,50 @@ public class UserController {
         return ResponseEntity.ok(userDTO);
     }
 
-    // VULNERABILITY(API6: Mass Assignment) - binds role/isAdmin from client
-    // --- Safe DTO (inner or top-level class) ---
-    record UserRegistrationDTO(
-        @NotBlank String username,
-        @NotBlank String password,
-        @Email String email
-    ){}
-
-   // FIXED: Prevent mass assignment by using DTO and setting role/isAdmin manually
+    // FIX(Task 6): Prevent mass assignment by using explicit DTO without role/isAdmin
+    // Uses CreateUserRequest DTO which only accepts username, password, and email
+    // Server controls role and isAdmin assignments to prevent privilege escalation
     @PostMapping
-    public AppUser create(@Valid @RequestBody UserRegistrationDTO body) {
+    public ResponseEntity<?> create(@Valid @RequestBody CreateUserRequest body, Authentication auth) {
+        // FIX(Task 3): Require authentication for user creation
+        if (auth == null) {
+            Map<String, String> error = new HashMap<>();
+            error.put("error", "Authentication required");
+            return ResponseEntity.status(401).body(error);
+        }
+        
+        // FIX(Task 3): Only admins can create users
+        AppUser currentUser = users.findByUsername(auth.getName())
+                .orElseThrow(() -> new RuntimeException("User not found"));
+        
+        if (!currentUser.isAdmin()) {
+            Map<String, String> error = new HashMap<>();
+            error.put("error", "Access denied - admin privileges required");
+            return ResponseEntity.status(403).body(error);
+        }
+        
+        // Check if username already exists
+        if (users.findByUsername(body.getUsername()).isPresent()) {
+            Map<String, String> error = new HashMap<>();
+            error.put("error", "Username already exists");
+            return ResponseEntity.status(400).body(error);
+        }
+        
+        // FIX(Task 6): Create user with safe defaults - server controls role/isAdmin
+        // FIX(Task 4): Hash password before storage (never store plaintext!)
         AppUser user = AppUser.builder()
-            .username(body.username())
-            .password(body.password())  // In production, hash this!
-            .email(body.email())
-            .role("USER")               // Default safe role
-            .isAdmin(false)             // Prevent privilege escalation
+            .username(body.getUsername())
+            .password(passwordEncoder.encode(body.getPassword()))  // Hash password with BCrypt
+            .email(body.getEmail())
+            .role("USER")               // Server controls: default to USER role
+            .isAdmin(false)             // Server controls: prevent privilege escalation
             .build();
-        return users.save(user);
+        
+        AppUser savedUser = users.save(user);
+        
+        // FIX(Task 4): Return DTO to avoid exposing password hash, role, isAdmin
+        UserResponseDTO userDTO = DTOMapper.toUserDTO(savedUser);
+        return ResponseEntity.ok(userDTO);
     }
 
     // FIX(Task 4): Return DTOs to prevent exposing sensitive user data in search results

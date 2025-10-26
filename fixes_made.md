@@ -6,6 +6,7 @@
 3. [Task 3: Enforce Ownership in Controllers](#task-3-enforce-ownership-in-controllers)
 4. [Task 4: Implement DTOs to Control Data Exposure](#task-4-implement-dtos-to-control-data-exposure)
 5. [Task 5: Add Rate Limiting](#task-5-add-rate-limiting)
+6. [Task 6: Prevent Mass Assignment](#task-6-prevent-mass-assignment)
 
 ---
 
@@ -2668,4 +2669,495 @@ This fix complements other security measures:
 **Fix Completed:** ✅ Task 5 - Add Rate Limiting  
 **Date:** October 26, 2025  
 **Security Level:** CRITICAL - API4 Unrestricted Resource Consumption fixed
+
+---
+
+## Task 6: Prevent Mass Assignment
+
+### Overview
+Completed the mass assignment prevention started in Task 4 by ensuring all user creation endpoints properly use explicit DTOs and server-side validation. Reviewed and fixed collaborator changes to ensure passwords are hashed and privilege fields are server-controlled.
+
+### Vulnerability Description
+**OWASP API Security Category:** API6:2023 - Unrestricted Access to Sensitive Business Flows (Mass Assignment)
+
+**Original Issue:**
+- API endpoints that accept JSON objects can automatically bind all fields from request to entity
+- Attackers could send additional fields like `{"username":"hacker","password":"pass","role":"ADMIN","isAdmin":true}`
+- Without explicit DTOs, Spring Boot would bind these dangerous fields directly to the entity
+- This allows privilege escalation attacks where regular users can make themselves admins
+
+**Attack Scenario:**
+```bash
+# Attacker creates account with admin privileges
+curl -X POST http://localhost:8080/api/users \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{
+    "username": "hacker",
+    "password": "password123",
+    "email": "hacker@evil.com",
+    "role": "ADMIN",
+    "isAdmin": true
+  }'
+
+# Without mass assignment protection: User created as ADMIN
+# With mass assignment protection: role and isAdmin ignored, user created as USER
+```
+
+### Changes Made
+
+#### 1. AppUser.java
+**Location:** `src/main/java/edu/nu/owaspapivulnlab/model/AppUser.java`
+
+**Changes:**
+- Updated comments to clarify that role and isAdmin fields are server-controlled
+- Documented that these fields are NOT exposed in CreateUserRequest DTO
+- Explained the vulnerability fix clearly
+
+**Code Updated:**
+```java
+// FIX(Task 6): Mass Assignment Protection
+// These fields (role, isAdmin) are NOT exposed in CreateUserRequest DTO
+// Server-side code explicitly sets these values to prevent privilege escalation
+// VULNERABILITY FIXED: Clients can no longer send {"role":"ADMIN","isAdmin":true} in POST requests
+private String role;   // e.g., "USER" or "ADMIN" - server controlled
+private boolean isAdmin; // Server controlled - cannot be set via API
+```
+
+**Impact:** Clear documentation that these fields are protected from client manipulation.
+
+---
+
+#### 2. UserController.java (Reviewed and Fixed Collaborator Changes)
+**Location:** `src/main/java/edu/nu/owaspapivulnlab/web/UserController.java`
+
+**Issues Found in Collaborator's Changes:**
+1. ❌ Used Java `record` syntax which isn't compatible with Java 8 target (causes compilation errors)
+2. ❌ Created duplicate DTO (`UserRegistrationDTO`) when `CreateUserRequest` already exists
+3. ❌ Injected `passwordEncoder` but didn't use it - password not hashed!
+4. ❌ Returned raw `AppUser` entity instead of `UserResponseDTO`
+5. ❌ Missing authentication and authorization checks
+
+**Fixed Implementation:**
+```java
+// FIX(Task 6): Prevent mass assignment by using explicit DTO without role/isAdmin
+// Uses CreateUserRequest DTO which only accepts username, password, and email
+// Server controls role and isAdmin assignments to prevent privilege escalation
+@PostMapping
+public ResponseEntity<?> create(@Valid @RequestBody CreateUserRequest body, Authentication auth) {
+    // FIX(Task 3): Require authentication for user creation
+    if (auth == null) {
+        Map<String, String> error = new HashMap<>();
+        error.put("error", "Authentication required");
+        return ResponseEntity.status(401).body(error);
+    }
+    
+    // FIX(Task 3): Only admins can create users
+    AppUser currentUser = users.findByUsername(auth.getName())
+            .orElseThrow(() -> new RuntimeException("User not found"));
+    
+    if (!currentUser.isAdmin()) {
+        Map<String, String> error = new HashMap<>();
+        error.put("error", "Access denied - admin privileges required");
+        return ResponseEntity.status(403).body(error);
+    }
+    
+    // Check if username already exists
+    if (users.findByUsername(body.getUsername()).isPresent()) {
+        Map<String, String> error = new HashMap<>();
+        error.put("error", "Username already exists");
+        return ResponseEntity.status(400).body(error);
+    }
+    
+    // FIX(Task 6): Create user with safe defaults - server controls role/isAdmin
+    // FIX(Task 4): Hash password before storage (never store plaintext!)
+    AppUser user = AppUser.builder()
+        .username(body.getUsername())
+        .password(passwordEncoder.encode(body.getPassword()))  // Hash password with BCrypt
+        .email(body.getEmail())
+        .role("USER")               // Server controls: default to USER role
+        .isAdmin(false)             // Server controls: prevent privilege escalation
+        .build();
+    
+    AppUser savedUser = users.save(user);
+    
+    // FIX(Task 4): Return DTO to avoid exposing password hash, role, isAdmin
+    UserResponseDTO userDTO = DTOMapper.toUserDTO(savedUser);
+    return ResponseEntity.ok(userDTO);
+}
+```
+
+**What Was Fixed:**
+1. ✅ Removed Java `record` and used existing `CreateUserRequest` DTO
+2. ✅ Actually used `passwordEncoder` to hash passwords with BCrypt
+3. ✅ Added authentication check (must be logged in)
+4. ✅ Added authorization check (only admins can create users)
+5. ✅ Added username uniqueness check
+6. ✅ Explicitly set `role = "USER"` and `isAdmin = false` (server-controlled)
+7. ✅ Returned `UserResponseDTO` instead of raw entity
+8. ✅ Added proper error handling with HTTP status codes
+
+**Impact:**
+- Passwords are now properly hashed before storage
+- role and isAdmin cannot be set by client - always server-controlled
+- Only admins can create users (prevents unauthorized account creation)
+- Sensitive data not exposed in response (uses DTO)
+- Proper validation and error handling
+
+---
+
+### CreateUserRequest DTO (Already Created in Task 4)
+**Location:** `src/main/java/edu/nu/owaspapivulnlab/dto/CreateUserRequest.java`
+
+This DTO was already created in Task 4 and is the proper way to prevent mass assignment:
+
+```java
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class CreateUserRequest {
+    @NotBlank(message = "Username is required")
+    @Size(min = 3, max = 50, message = "Username must be between 3 and 50 characters")
+    private String username;
+    
+    @NotBlank(message = "Password is required")
+    @Size(min = 8, message = "Password must be at least 8 characters")
+    private String password;
+    
+    @Email(message = "Valid email is required")
+    @NotBlank(message = "Email is required")
+    private String email;
+    
+    // FIX(Task 6): Dangerous fields intentionally excluded:
+    // - role: Server assigns default "USER" role
+    // - isAdmin: Server controls admin privileges, not client
+    // This prevents privilege escalation attacks via mass assignment
+}
+```
+
+**Key Security Features:**
+- Only accepts username, password, and email
+- Excludes role and isAdmin fields completely
+- Includes validation annotations for input sanitization
+- Server code explicitly sets role="USER" and isAdmin=false
+
+---
+
+### Before vs After Comparison
+
+#### Before (Vulnerable):
+```java
+// Old vulnerable code (hypothetical)
+@PostMapping
+public AppUser create(@RequestBody AppUser user) {
+    return users.save(user);  // Binds ALL fields from JSON!
+}
+
+// Attack request:
+POST /api/users
+{
+  "username": "hacker",
+  "password": "pass",
+  "email": "hack@evil.com",
+  "role": "ADMIN",        // ❌ Bound to entity!
+  "isAdmin": true          // ❌ Bound to entity!
+}
+
+// Result: User created with ADMIN role and isAdmin=true
+```
+
+#### After (Fixed):
+```java
+// Fixed code with explicit DTO
+@PostMapping
+public ResponseEntity<?> create(@Valid @RequestBody CreateUserRequest body, Authentication auth) {
+    // Authorization check
+    if (!currentUser.isAdmin()) {
+        return ResponseEntity.status(403).body(error);
+    }
+    
+    // Explicit field mapping with server-controlled values
+    AppUser user = AppUser.builder()
+        .username(body.getUsername())           // From DTO
+        .password(passwordEncoder.encode(...))  // Hashed
+        .email(body.getEmail())                 // From DTO
+        .role("USER")                           // Server controlled!
+        .isAdmin(false)                         // Server controlled!
+        .build();
+    
+    return ResponseEntity.ok(DTOMapper.toUserDTO(users.save(user)));
+}
+
+// Attack attempt:
+POST /api/users
+{
+  "username": "hacker",
+  "password": "pass",
+  "email": "hack@evil.com",
+  "role": "ADMIN",        // ✅ Ignored (not in DTO)
+  "isAdmin": true          // ✅ Ignored (not in DTO)
+}
+
+// Result: User created with role="USER" and isAdmin=false
+// Attack fields ignored because CreateUserRequest doesn't have those fields
+```
+
+---
+
+### Testing Procedures
+
+#### Test 1: Verify Mass Assignment is Blocked
+```bash
+# Login as admin (bob)
+TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"bob","password":"bob123"}' | jq -r '.token')
+
+# Try to create user with admin privileges
+curl -v -X POST http://localhost:8080/api/users \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "username": "attacker",
+    "password": "password123",
+    "email": "attacker@evil.com",
+    "role": "ADMIN",
+    "isAdmin": true
+  }'
+
+# Expected Response:
+# HTTP 200 OK
+# {
+#   "id": 3,
+#   "username": "attacker",
+#   "email": "attacker@evil.com"
+# }
+# Note: role and isAdmin NOT in response (DTO filters them)
+
+# Verify in database (H2 Console):
+SELECT * FROM APP_USER WHERE username = 'attacker';
+# Expected: role='USER', is_admin=false (server-controlled)
+```
+
+#### Test 2: Verify Password is Hashed
+```bash
+# Create a new user
+curl -X POST http://localhost:8080/api/users \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "username": "testuser",
+    "password": "mypassword123",
+    "email": "test@example.com"
+  }'
+
+# Check database:
+SELECT username, password FROM APP_USER WHERE username = 'testuser';
+# Expected: password starts with $2a$ or $2b$ (BCrypt hash)
+# NOT: password = 'mypassword123' (plaintext)
+```
+
+#### Test 3: Verify Non-Admins Cannot Create Users
+```bash
+# Login as regular user (alice)
+ALICE_TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"alice123"}' | jq -r '.token')
+
+# Try to create user as non-admin
+curl -v -X POST http://localhost:8080/api/users \
+  -H "Authorization: Bearer $ALICE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "username": "newuser",
+    "password": "password123",
+    "email": "new@example.com"
+  }'
+
+# Expected Response:
+# HTTP 403 Forbidden
+# {"error":"Access denied - admin privileges required"}
+```
+
+#### Test 4: Verify Validation Works
+```bash
+# Try to create user with invalid email
+curl -v -X POST http://localhost:8080/api/users \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "username": "baduser",
+    "password": "pass",
+    "email": "not-an-email"
+  }'
+
+# Expected: HTTP 400 Bad Request
+# Validation error for @Email annotation
+
+# Try to create user with short password
+curl -v -X POST http://localhost:8080/api/users \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "username": "baduser",
+    "password": "short",
+    "email": "test@example.com"
+  }'
+
+# Expected: HTTP 400 Bad Request
+# Validation error: "Password must be at least 8 characters"
+```
+
+#### Test 5: Verify Duplicate Username Rejected
+```bash
+# Try to create user with existing username
+curl -v -X POST http://localhost:8080/api/users \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "username": "alice",
+    "password": "password123",
+    "email": "duplicate@example.com"
+  }'
+
+# Expected Response:
+# HTTP 400 Bad Request
+# {"error":"Username already exists"}
+```
+
+---
+
+### Security Benefits
+
+#### 1. Privilege Escalation Prevention
+- **Before:** Attackers could set role="ADMIN" in request
+- **After:** Server explicitly controls role assignment
+- **Impact:** Prevents unauthorized admin access
+
+#### 2. Password Security
+- **Before:** Collaborator's code didn't hash passwords
+- **After:** All passwords hashed with BCrypt
+- **Impact:** Passwords protected even if database compromised
+
+#### 3. Data Exposure Prevention
+- **Before:** Raw entity returned (exposes role, isAdmin, password hash)
+- **After:** DTO returned (only safe fields exposed)
+- **Impact:** Sensitive metadata not leaked to clients
+
+#### 4. Authorization Control
+- **Before:** Anyone could create users
+- **After:** Only admins can create users
+- **Impact:** Prevents unauthorized account creation
+
+#### 5. Input Validation
+- **Before:** No validation on input fields
+- **After:** @Valid with comprehensive constraints
+- **Impact:** Rejects malformed data before processing
+
+#### 6. Duplicate Prevention
+- **Before:** No uniqueness check
+- **After:** Username uniqueness enforced
+- **Impact:** Prevents database constraint violations
+
+---
+
+### Mass Assignment Defense Layers
+
+This implementation uses **defense in depth** with multiple protection layers:
+
+1. **DTO Layer:** CreateUserRequest excludes dangerous fields
+2. **Server-Side Assignment:** Explicit .role("USER") and .isAdmin(false)
+3. **Authorization:** Only admins can create users
+4. **Validation:** Input sanitization with Bean Validation
+5. **Response Filtering:** UserResponseDTO hides sensitive data
+6. **Password Hashing:** BCrypt encoding before storage
+
+**Even if one layer fails, others provide backup protection.**
+
+---
+
+### Code Review Summary
+
+**Collaborator's Changes Reviewed:**
+- ✅ Concept was correct (use explicit DTO, set role/isAdmin manually)
+- ❌ Implementation had critical issues:
+  - Java `record` syntax incompatible with Java 8 target
+  - Password not hashed (security vulnerability)
+  - Missing authentication/authorization checks
+  - No validation or error handling
+  - Returned raw entity instead of DTO
+
+**Fixed Implementation:**
+- ✅ Uses existing CreateUserRequest DTO (no duplicate)
+- ✅ Properly hashes passwords with BCrypt
+- ✅ Enforces authentication and admin authorization
+- ✅ Validates input with Bean Validation
+- ✅ Returns safe DTO response
+- ✅ Handles errors with proper HTTP status codes
+- ✅ Checks username uniqueness
+- ✅ Fully documented with comments
+
+---
+
+### Relationship to Other Tasks
+
+Task 6 completes the mass assignment prevention started in Task 4:
+
+- **Task 4:** Created DTOs for output (UserResponseDTO, AccountResponseDTO)
+- **Task 4:** Created CreateUserRequest for input
+- **Task 6:** Ensured CreateUserRequest is properly used in create() endpoint
+- **Task 6:** Fixed collaborator's incomplete implementation
+- **Task 6:** Added all missing security controls
+
+Together, Tasks 4 and 6 provide comprehensive protection against:
+- API3: Excessive Data Exposure (Task 4 output DTOs)
+- API6: Mass Assignment (Task 4 + Task 6 input DTOs with server-side control)
+
+---
+
+### Production Considerations
+
+#### 1. Audit Logging
+Add logging for privilege-related actions:
+```java
+log.info("User created: username={}, role={}, createdBy={}", 
+    user.getUsername(), user.getRole(), currentUser.getUsername());
+```
+
+#### 2. Role Management
+For production, consider:
+- Role-based access control (RBAC) with proper role hierarchy
+- Separate endpoint for admin promotion (with strict controls)
+- Audit trail for all role changes
+
+#### 3. Account Approval Workflow
+Consider requiring admin approval for new accounts:
+```java
+.role("USER")
+.isAdmin(false)
+.approved(false)  // Requires admin approval
+```
+
+#### 4. Email Verification
+Add email verification before account activation:
+```java
+.emailVerified(false)
+.verificationToken(UUID.randomUUID().toString())
+```
+
+---
+
+### Files Modified
+
+1. ✅ `AppUser.java` - Updated comments documenting mass assignment protection
+2. ✅ `UserController.java` - Fixed create() method to properly prevent mass assignment
+3. ✅ `CreateUserRequest.java` - Already exists from Task 4 (no changes needed)
+4. ✅ `fixes_made.md` - Comprehensive Task 6 documentation
+
+---
+
+**Fix Completed:** ✅ Task 6 - Prevent Mass Assignment  
+**Date:** October 26, 2025  
+**Security Level:** CRITICAL - API6 Mass Assignment vulnerability FIXED  
+**Collaborator Review:** Issues identified and corrected
 
