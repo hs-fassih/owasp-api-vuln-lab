@@ -7,9 +7,13 @@ import edu.nu.owaspapivulnlab.model.Account;
 import edu.nu.owaspapivulnlab.model.AppUser;
 import edu.nu.owaspapivulnlab.repo.AccountRepository;
 import edu.nu.owaspapivulnlab.repo.AppUserRepository;
+// FIX(Task 4): Import DTOs for safe data exposure
+import edu.nu.owaspapivulnlab.dto.AccountResponseDTO;
+import edu.nu.owaspapivulnlab.dto.DTOMapper;
 
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -118,10 +122,28 @@ public class AccountController {
         return ResponseEntity.ok(response);
     }
 
-    // Safe-ish helper to view my accounts (still leaks more than needed)
+    // FIX(Task 4): Updated to return DTOs instead of raw entities
+    // Prevents exposing internal fields like ownerUserId
     @GetMapping("/mine")
-    public Object mine(Authentication auth) {
-        AppUser me = users.findByUsername(auth != null ? auth.getName() : "anonymous").orElse(null);
-        return me == null ? Collections.emptyList() : accounts.findByOwnerUserId(me.getId());
+    public ResponseEntity<?> mine(Authentication auth) {
+        // Check authentication
+        if (auth == null) {
+            Map<String, String> error = new HashMap<>();
+            error.put("error", "Authentication required");
+            return ResponseEntity.status(401).body(error);
+        }
+        
+        // Get authenticated user
+        AppUser me = users.findByUsername(auth.getName()).orElse(null);
+        if (me == null) {
+            return ResponseEntity.ok(Collections.emptyList());
+        }
+        
+        // FIX(Task 4): Convert entities to DTOs before returning
+        // This prevents exposing ownerUserId field to clients
+        List<Account> userAccounts = accounts.findByOwnerUserId(me.getId());
+        List<AccountResponseDTO> accountDTOs = DTOMapper.toAccountDTOList(userAccounts);
+        
+        return ResponseEntity.ok(accountDTOs);
     }
 }

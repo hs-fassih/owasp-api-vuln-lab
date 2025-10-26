@@ -4,9 +4,15 @@ import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 // FIX(Task 3): Import Authentication for ownership verification
 import org.springframework.security.core.Authentication;
+// FIX(Task 4): Import PasswordEncoder for secure password handling
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 import edu.nu.owaspapivulnlab.model.AppUser;
 import edu.nu.owaspapivulnlab.repo.AppUserRepository;
+// FIX(Task 4): Import DTOs for safe data exposure
+import edu.nu.owaspapivulnlab.dto.UserResponseDTO;
+import edu.nu.owaspapivulnlab.dto.CreateUserRequest;
+import edu.nu.owaspapivulnlab.dto.DTOMapper;
 
 import java.util.HashMap;
 import java.util.List;
@@ -16,9 +22,12 @@ import java.util.Map;
 @RequestMapping("/api/users")
 public class UserController {
     private final AppUserRepository users;
+    // FIX(Task 4/6): Inject PasswordEncoder for secure user creation
+    private final PasswordEncoder passwordEncoder;
 
-    public UserController(AppUserRepository users) {
+    public UserController(AppUserRepository users, PasswordEncoder passwordEncoder) {
         this.users = users;
+        this.passwordEncoder = passwordEncoder;
     }
 
     // FIX(Task 3): Added ownership verification to prevent BOLA/IDOR attacks
@@ -48,26 +57,80 @@ public class UserController {
         AppUser user = users.findById(id)
                 .orElseThrow(() -> new RuntimeException("User not found"));
         
-        // TODO(Task 4): Return DTO instead of full entity to avoid exposing sensitive data
-        return ResponseEntity.ok(user);
+        // FIX(Task 4): Return DTO instead of full entity to avoid exposing sensitive data
+        // Prevents exposing password hash, role, and isAdmin flag
+        UserResponseDTO userDTO = DTOMapper.toUserDTO(user);
+        return ResponseEntity.ok(userDTO);
     }
 
-    // VULNERABILITY(API6: Mass Assignment) - binds role/isAdmin from client
+    // FIX(Task 6): Use CreateUserRequest DTO to prevent mass assignment
+    // FIX(Task 4): Return UserResponseDTO to prevent exposing sensitive data
+    // Server controls role and admin privileges, preventing privilege escalation
     @PostMapping
-    public AppUser create(@Valid @RequestBody AppUser body) {
-        return users.save(body);
+    public ResponseEntity<?> create(@Valid @RequestBody CreateUserRequest request) {
+        // Check if username already exists
+        if (users.findByUsername(request.getUsername()).isPresent()) {
+            Map<String, String> error = new HashMap<>();
+            error.put("error", "Username already exists");
+            return ResponseEntity.status(400).body(error);
+        }
+        
+        // FIX(Task 6): Server assigns role and admin status, NOT the client
+        // This prevents mass assignment attacks where client tries to set isAdmin=true
+        AppUser newUser = AppUser.builder()
+                .username(request.getUsername())
+                .password(passwordEncoder.encode(request.getPassword()))  // Hash password
+                .email(request.getEmail())
+                .role("USER")  // Always assign USER role for new accounts
+                .isAdmin(false)  // Never allow client to set admin flag
+                .build();
+        
+        AppUser savedUser = users.save(newUser);
+        
+        // FIX(Task 4): Return DTO instead of full entity
+        // Prevents exposing the just-hashed password back to client
+        UserResponseDTO responseDTO = DTOMapper.toUserDTO(savedUser);
+        return ResponseEntity.status(201).body(responseDTO);
     }
 
-    // VULNERABILITY(API9: Improper Inventory + API8 Injection style): naive 'search' that can be abused for enumeration
+    // FIX(Task 4): Return DTOs to prevent exposing sensitive user data in search results
+    // REMAINING VULNERABILITY(API9): Search still allows enumeration (will be fixed with rate limiting in Task 5)
     @GetMapping("/search")
-    public List<AppUser> search(@RequestParam String q) {
-        return users.search(q);
+    public ResponseEntity<?> search(@RequestParam String q, Authentication auth) {
+        // Require authentication for search
+        if (auth == null) {
+            Map<String, String> error = new HashMap<>();
+            error.put("error", "Authentication required");
+            return ResponseEntity.status(401).body(error);
+        }
+        
+        // Perform search and convert to DTOs
+        List<AppUser> searchResults = users.search(q);
+        
+        // FIX(Task 4): Convert to DTOs to prevent exposing passwords, roles, and admin flags
+        List<UserResponseDTO> resultDTOs = DTOMapper.toUserDTOList(searchResults);
+        
+        return ResponseEntity.ok(resultDTOs);
     }
 
-    // VULNERABILITY(API3: Excessive Data Exposure) - returns all users including sensitive fields
+    // FIX(Task 4): Return DTOs to prevent exposing sensitive user data
+    // FIX(Task 3): Require authentication to list users
     @GetMapping
-    public List<AppUser> list() {
-        return users.findAll();
+    public ResponseEntity<?> list(Authentication auth) {
+        // Require authentication
+        if (auth == null) {
+            Map<String, String> error = new HashMap<>();
+            error.put("error", "Authentication required");
+            return ResponseEntity.status(401).body(error);
+        }
+        
+        // Get all users and convert to DTOs
+        List<AppUser> allUsers = users.findAll();
+        
+        // FIX(Task 4): Convert to DTOs to prevent exposing passwords, roles, and admin flags
+        List<UserResponseDTO> userDTOs = DTOMapper.toUserDTOList(allUsers);
+        
+        return ResponseEntity.ok(userDTOs);
     }
 
     // FIX(Task 3): Added authorization check to prevent unauthorized deletions

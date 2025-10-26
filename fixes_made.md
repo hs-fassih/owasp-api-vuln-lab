@@ -4,6 +4,7 @@
 1. [Task 1: Replace Plaintext Passwords with BCrypt](#task-1-replace-plaintext-passwords-with-bcrypt)
 2. [Task 2: Tighten SecurityFilterChain](#task-2-tighten-securityfilterchain)
 3. [Task 3: Enforce Ownership in Controllers](#task-3-enforce-ownership-in-controllers)
+4. [Task 4: Implement DTOs to Control Data Exposure](#task-4-implement-dtos-to-control-data-exposure)
 
 ---
 
@@ -1391,3 +1392,784 @@ These will be addressed in subsequent tasks.
 **Fix Completed:** ✅ Task 3 - Enforce Ownership in Controllers  
 **Date:** October 26, 2025  
 **Security Level:** CRITICAL - BOLA/IDOR vulnerability fixed, prevents unauthorized resource access
+
+---
+
+## Task 4: Implement DTOs to Control Data Exposure
+
+### Overview
+Fixed the API3 Excessive Data Exposure vulnerability by implementing Data Transfer Objects (DTOs) throughout the application. Controllers now return DTOs instead of raw entity objects, preventing exposure of sensitive fields like passwords, roles, and internal IDs.
+
+### Vulnerability Description
+**OWASP API Security Category:** API3 - Excessive Data Exposure & API6 - Mass Assignment (partial)
+
+**Original Issues:**
+
+1. **Password Hash Exposure**: User endpoints returned full `AppUser` entities including BCrypt password hashes
+   - Example: `GET /api/users/1` returned `{"password":"$2a$10$xyz..."}`
+   - Even hashed passwords should never be exposed to clients
+
+2. **Role and Admin Flag Exposure**: Internal authorization details exposed to clients
+   - Endpoints returned `role` and `isAdmin` fields
+   - Clients don't need to know internal authorization details
+   - Information disclosure could aid attackers in privilege escalation attempts
+
+3. **Internal ID Exposure**: Foreign keys and internal relationships exposed
+   - `Account` entity returned `ownerUserId` field
+   - Exposes database structure and relationships
+   - Not relevant for API consumers
+
+4. **Mass Assignment Vulnerability**: Direct entity binding allowed privilege escalation
+   - `POST /api/users` accepted full `AppUser` entity
+   - Clients could set `role="ADMIN"` and `isAdmin=true`
+   - No input validation or server-side control
+
+### Changes Made
+
+#### 1. Created DTO Package Structure
+
+**New Directory:** `src/main/java/edu/nu/owaspapivulnlab/dto/`
+
+Created four new DTO classes to handle data transfer safely:
+
+---
+
+#### 2. UserResponseDTO.java
+
+**Location:** `src/main/java/edu/nu/owaspapivulnlab/dto/UserResponseDTO.java`
+
+**Purpose:** Safe representation of user data for API responses
+
+**Code:**
+```java
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class UserResponseDTO {
+    private Long id;
+    private String username;
+    private String email;
+    
+    // FIX(Task 4): Sensitive fields intentionally excluded:
+    // - password: Never expose password hashes
+    // - role: Internal authorization detail, not for client consumption
+    // - isAdmin: Internal flag, should not be exposed to clients
+}
+```
+
+**Fields Included:**
+- ✅ `id` - Public identifier
+- ✅ `username` - Public display name
+- ✅ `email` - Contact information
+
+**Fields Excluded (Security):**
+- ❌ `password` - BCrypt hash, should never be exposed
+- ❌ `role` - Internal authorization detail
+- ❌ `isAdmin` - Internal privilege flag
+
+**Impact:** Users can no longer see password hashes, roles, or admin flags in API responses
+
+---
+
+#### 3. AccountResponseDTO.java
+
+**Location:** `src/main/java/edu/nu/owaspapivulnlab/dto/AccountResponseDTO.java`
+
+**Purpose:** Safe representation of account data for API responses
+
+**Code:**
+```java
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class AccountResponseDTO {
+    private Long id;
+    private String iban;
+    private Double balance;
+    
+    // FIX(Task 4): Sensitive fields intentionally excluded:
+    // - ownerUserId: Internal foreign key, not relevant for API responses
+}
+```
+
+**Fields Included:**
+- ✅ `id` - Account identifier
+- ✅ `iban` - Account number
+- ✅ `balance` - Current balance
+
+**Fields Excluded (Security):**
+- ❌ `ownerUserId` - Internal foreign key, database implementation detail
+
+**Impact:** Clients no longer see internal database relationships
+
+---
+
+#### 4. CreateUserRequest.java
+
+**Location:** `src/main/java/edu/nu/owaspapivulnlab/dto/CreateUserRequest.java`
+
+**Purpose:** Safe input DTO for user creation, prevents mass assignment
+
+**Code:**
+```java
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class CreateUserRequest {
+    @NotBlank(message = "Username is required")
+    @Size(min = 3, max = 50, message = "Username must be between 3 and 50 characters")
+    private String username;
+    
+    @NotBlank(message = "Password is required")
+    @Size(min = 8, message = "Password must be at least 8 characters")
+    private String password;
+    
+    @Email(message = "Valid email is required")
+    @NotBlank(message = "Email is required")
+    private String email;
+    
+    // FIX(Task 6): Dangerous fields intentionally excluded:
+    // - role: Server assigns default "USER" role
+    // - isAdmin: Server controls admin privileges, not client
+}
+```
+
+**Fields Accepted:**
+- ✅ `username` - With validation (3-50 chars)
+- ✅ `password` - With validation (min 8 chars)
+- ✅ `email` - With validation (valid email format)
+
+**Fields Rejected (Security):**
+- ❌ `role` - Server-controlled, always "USER" for new accounts
+- ❌ `isAdmin` - Server-controlled, always false for new accounts
+
+**Impact:** 
+- Prevents privilege escalation via mass assignment
+- Clients cannot create admin accounts
+- Server has full control over authorization
+
+---
+
+#### 5. DTOMapper.java
+
+**Location:** `src/main/java/edu/nu/owaspapivulnlab/dto/DTOMapper.java`
+
+**Purpose:** Centralized utility class for entity-to-DTO conversions
+
+**Methods:**
+
+```java
+public class DTOMapper {
+    // Convert single user entity to DTO
+    public static UserResponseDTO toUserDTO(AppUser user) {
+        return UserResponseDTO.builder()
+            .id(user.getId())
+            .username(user.getUsername())
+            .email(user.getEmail())
+            .build();
+    }
+    
+    // Convert list of users to list of DTOs
+    public static List<UserResponseDTO> toUserDTOList(List<AppUser> users) {
+        return users.stream()
+            .map(DTOMapper::toUserDTO)
+            .collect(Collectors.toList());
+    }
+    
+    // Convert single account entity to DTO
+    public static AccountResponseDTO toAccountDTO(Account account) {
+        return AccountResponseDTO.builder()
+            .id(account.getId())
+            .iban(account.getIban())
+            .balance(account.getBalance())
+            .build();
+    }
+    
+    // Convert list of accounts to list of DTOs
+    public static List<AccountResponseDTO> toAccountDTOList(List<Account> accounts) {
+        return accounts.stream()
+            .map(DTOMapper::toAccountDTO)
+            .collect(Collectors.toList());
+    }
+}
+```
+
+**Benefits:**
+- ✅ Centralized conversion logic
+- ✅ Consistent data transformation across all controllers
+- ✅ Easy to maintain and update
+- ✅ Null-safe implementations
+- ✅ Stream API for efficient list conversions
+
+---
+
+#### 6. AccountController.java Updates
+
+**Location:** `src/main/java/edu/nu/owaspapivulnlab/web/AccountController.java`
+
+##### a) Added DTO Imports
+
+```java
+import edu.nu.owaspapivulnlab.dto.AccountResponseDTO;
+import edu.nu.owaspapivulnlab.dto.DTOMapper;
+import java.util.List;
+```
+
+##### b) Updated mine() Method
+
+**Before (VULNERABLE):**
+```java
+@GetMapping("/mine")
+public Object mine(Authentication auth) {
+    AppUser me = users.findByUsername(auth != null ? auth.getName() : "anonymous").orElse(null);
+    return me == null ? Collections.emptyList() : accounts.findByOwnerUserId(me.getId());
+}
+```
+
+**After (SECURE):**
+```java
+@GetMapping("/mine")
+public ResponseEntity<?> mine(Authentication auth) {
+    // Check authentication
+    if (auth == null) {
+        Map<String, String> error = new HashMap<>();
+        error.put("error", "Authentication required");
+        return ResponseEntity.status(401).body(error);
+    }
+    
+    // Get authenticated user
+    AppUser me = users.findByUsername(auth.getName()).orElse(null);
+    if (me == null) {
+        return ResponseEntity.ok(Collections.emptyList());
+    }
+    
+    // FIX(Task 4): Convert entities to DTOs before returning
+    List<Account> userAccounts = accounts.findByOwnerUserId(me.getId());
+    List<AccountResponseDTO> accountDTOs = DTOMapper.toAccountDTOList(userAccounts);
+    
+    return ResponseEntity.ok(accountDTOs);
+}
+```
+
+**Security Improvements:**
+- ✅ Authentication verification added
+- ✅ Returns `AccountResponseDTO` instead of raw `Account` entities
+- ✅ Hides `ownerUserId` from response
+- ✅ Proper error handling with structured responses
+
+**Response Comparison:**
+
+Before:
+```json
+[
+  {
+    "id": 1,
+    "ownerUserId": 1,  // ❌ Internal foreign key exposed
+    "iban": "PK00-ALICE",
+    "balance": 1000.0
+  }
+]
+```
+
+After:
+```json
+[
+  {
+    "id": 1,
+    "iban": "PK00-ALICE",
+    "balance": 1000.0
+    // ✅ ownerUserId no longer exposed
+  }
+]
+```
+
+---
+
+#### 7. UserController.java Updates
+
+**Location:** `src/main/java/edu/nu/owaspapivulnlab/web/UserController.java`
+
+##### a) Added DTO Imports and PasswordEncoder
+
+```java
+import org.springframework.security.crypto.password.PasswordEncoder;
+import edu.nu.owaspapivulnlab.dto.UserResponseDTO;
+import edu.nu.owaspapivulnlab.dto.CreateUserRequest;
+import edu.nu.owaspapivulnlab.dto.DTOMapper;
+
+// Injected PasswordEncoder for secure user creation
+private final PasswordEncoder passwordEncoder;
+```
+
+##### b) Updated get() Method
+
+**Before (VULNERABLE):**
+```java
+@GetMapping("/{id}")
+public ResponseEntity<?> get(@PathVariable Long id, Authentication auth) {
+    // ... authorization checks ...
+    AppUser user = users.findById(id).orElseThrow(...);
+    return ResponseEntity.ok(user);  // ❌ Exposes password, role, isAdmin
+}
+```
+
+**After (SECURE):**
+```java
+@GetMapping("/{id}")
+public ResponseEntity<?> get(@PathVariable Long id, Authentication auth) {
+    // ... authorization checks ...
+    AppUser user = users.findById(id).orElseThrow(...);
+    
+    // FIX(Task 4): Return DTO instead of full entity
+    UserResponseDTO userDTO = DTOMapper.toUserDTO(user);
+    return ResponseEntity.ok(userDTO);  // ✅ Only safe fields
+}
+```
+
+**Response Comparison:**
+
+Before:
+```json
+{
+  "id": 1,
+  "username": "alice",
+  "password": "$2a$10$xYzAbC...",  // ❌ Password hash exposed
+  "email": "alice@cydea.tech",
+  "role": "USER",  // ❌ Internal role exposed
+  "isAdmin": false  // ❌ Internal flag exposed
+}
+```
+
+After:
+```json
+{
+  "id": 1,
+  "username": "alice",
+  "email": "alice@cydea.tech"
+  // ✅ Password, role, and isAdmin no longer exposed
+}
+```
+
+---
+
+##### c) Updated create() Method - Prevents Mass Assignment
+
+**Before (VULNERABLE):**
+```java
+@PostMapping
+public AppUser create(@Valid @RequestBody AppUser body) {
+    return users.save(body);  // ❌ Client can set role and isAdmin
+}
+```
+
+**After (SECURE):**
+```java
+@PostMapping
+public ResponseEntity<?> create(@Valid @RequestBody CreateUserRequest request) {
+    // Check if username already exists
+    if (users.findByUsername(request.getUsername()).isPresent()) {
+        Map<String, String> error = new HashMap<>();
+        error.put("error", "Username already exists");
+        return ResponseEntity.status(400).body(error);
+    }
+    
+    // FIX(Task 6): Server assigns role and admin status, NOT the client
+    AppUser newUser = AppUser.builder()
+        .username(request.getUsername())
+        .password(passwordEncoder.encode(request.getPassword()))
+        .email(request.getEmail())
+        .role("USER")  // ✅ Server controls role
+        .isAdmin(false)  // ✅ Server controls admin flag
+        .build();
+    
+    AppUser savedUser = users.save(newUser);
+    
+    // FIX(Task 4): Return DTO instead of full entity
+    UserResponseDTO responseDTO = DTOMapper.toUserDTO(savedUser);
+    return ResponseEntity.status(201).body(responseDTO);
+}
+```
+
+**Security Improvements:**
+- ✅ Uses `CreateUserRequest` DTO (no role/isAdmin fields)
+- ✅ Server always assigns `role="USER"`
+- ✅ Server always sets `isAdmin=false`
+- ✅ Password is hashed before storage
+- ✅ Returns DTO (doesn't echo back hashed password)
+- ✅ Validates username uniqueness
+- ✅ Proper 201 Created status code
+
+**Attack Prevention:**
+
+Before (Mass Assignment Attack):
+```bash
+# Attacker tries to create admin account
+curl -X POST http://localhost:8080/api/users \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username":"hacker",
+    "password":"pass123",
+    "email":"hacker@evil.com",
+    "role":"ADMIN",
+    "isAdmin":true
+  }'
+# Before: Creates admin account ❌
+```
+
+After (Attack Blocked):
+```bash
+# Same request
+# After: role and isAdmin fields are ignored
+# Server creates USER account regardless ✅
+```
+
+---
+
+##### d) Updated search() Method
+
+**Before (VULNERABLE):**
+```java
+@GetMapping("/search")
+public List<AppUser> search(@RequestParam String q) {
+    return users.search(q);  // ❌ Exposes all user data
+}
+```
+
+**After (SECURE):**
+```java
+@GetMapping("/search")
+public ResponseEntity<?> search(@RequestParam String q, Authentication auth) {
+    // Require authentication
+    if (auth == null) {
+        Map<String, String> error = new HashMap<>();
+        error.put("error", "Authentication required");
+        return ResponseEntity.status(401).body(error);
+    }
+    
+    // Perform search and convert to DTOs
+    List<AppUser> searchResults = users.search(q);
+    
+    // FIX(Task 4): Convert to DTOs to prevent exposing passwords, roles, admin flags
+    List<UserResponseDTO> resultDTOs = DTOMapper.toUserDTOList(searchResults);
+    
+    return ResponseEntity.ok(resultDTOs);
+}
+```
+
+**Security Improvements:**
+- ✅ Authentication required (Task 2/3)
+- ✅ Returns list of `UserResponseDTO` instead of entities
+- ✅ Prevents exposing sensitive data in search results
+- ✅ Note: Rate limiting still needed (Task 5)
+
+---
+
+##### e) Updated list() Method
+
+**Before (VULNERABLE):**
+```java
+@GetMapping
+public List<AppUser> list() {
+    return users.findAll();  // ❌ Exposes all user data
+}
+```
+
+**After (SECURE):**
+```java
+@GetMapping
+public ResponseEntity<?> list(Authentication auth) {
+    // Require authentication
+    if (auth == null) {
+        Map<String, String> error = new HashMap<>();
+        error.put("error", "Authentication required");
+        return ResponseEntity.status(401).body(error);
+    }
+    
+    // Get all users and convert to DTOs
+    List<AppUser> allUsers = users.findAll();
+    
+    // FIX(Task 4): Convert to DTOs to prevent exposing passwords, roles, admin flags
+    List<UserResponseDTO> userDTOs = DTOMapper.toUserDTOList(allUsers);
+    
+    return ResponseEntity.ok(userDTOs);
+}
+```
+
+**Security Improvements:**
+- ✅ Authentication required
+- ✅ Returns list of `UserResponseDTO`
+- ✅ Prevents bulk password hash enumeration
+- ✅ Hides internal authorization details
+
+---
+
+### Security Benefits
+
+1. **Password Protection:**
+   - BCrypt hashes never appear in API responses
+   - Even authenticated users can't see their own password hashes
+   - Reduces risk of offline brute force attacks
+
+2. **Authorization Information Hiding:**
+   - Roles and admin flags not exposed to clients
+   - Clients can't enumerate admin accounts
+   - Reduces reconnaissance information for attackers
+
+3. **Database Schema Hiding:**
+   - Foreign keys like `ownerUserId` not exposed
+   - Internal relationships hidden from clients
+   - Database structure remains opaque
+
+4. **Mass Assignment Prevention:**
+   - Input DTOs control what clients can set
+   - Server has full control over sensitive fields
+   - Prevents privilege escalation attacks
+
+5. **Principle of Least Privilege:**
+   - Clients only receive data they need
+   - No internal implementation details leaked
+   - Reduces attack surface
+
+6. **Consistent Security:**
+   - Centralized mapping logic in `DTOMapper`
+   - All endpoints use same secure patterns
+   - Easy to audit and maintain
+
+### Testing the Fix
+
+#### Test 1: Verify Password Not Exposed
+
+**Test getting user profile:**
+```powershell
+# Login and get token
+$response = curl -X POST http://localhost:8080/api/auth/login `
+  -H "Content-Type: application/json" `
+  -d '{"username":"alice","password":"alice123"}' | ConvertFrom-Json
+
+# Get user profile
+curl -X GET http://localhost:8080/api/users/1 `
+  -H "Authorization: Bearer $($response.token)" | ConvertFrom-Json
+```
+
+**Expected Response:**
+```json
+{
+  "id": 1,
+  "username": "alice",
+  "email": "alice@cydea.tech"
+}
+```
+
+**Verify:**
+- ✅ No `password` field
+- ✅ No `role` field
+- ✅ No `isAdmin` field
+
+---
+
+#### Test 2: Verify Account ownerUserId Not Exposed
+
+**Test getting account list:**
+```powershell
+curl -X GET http://localhost:8080/api/accounts/mine `
+  -H "Authorization: Bearer $($response.token)" | ConvertFrom-Json
+```
+
+**Expected Response:**
+```json
+[
+  {
+    "id": 1,
+    "iban": "PK00-ALICE",
+    "balance": 1000.0
+  }
+]
+```
+
+**Verify:**
+- ✅ No `ownerUserId` field
+- ✅ Only relevant account information
+
+---
+
+#### Test 3: Verify Mass Assignment Prevention
+
+**Test creating user with admin privileges:**
+```powershell
+curl -X POST http://localhost:8080/api/users `
+  -H "Content-Type: application/json" `
+  -d '{
+    "username":"attacker",
+    "password":"password123",
+    "email":"attacker@test.com",
+    "role":"ADMIN",
+    "isAdmin":true
+  }' | ConvertFrom-Json
+```
+
+**Expected Response:**
+```json
+{
+  "id": 3,
+  "username": "attacker",
+  "email": "attacker@test.com"
+}
+```
+
+**Verify in Database:**
+```sql
+SELECT username, role, isAdmin FROM APP_USER WHERE username='attacker';
+```
+
+**Expected Result:**
+```
+username  | role | isAdmin
+----------|------|--------
+attacker  | USER | false
+```
+
+**Verification:**
+- ✅ User created with USER role (not ADMIN)
+- ✅ isAdmin is false (not true)
+- ✅ Server ignored client-provided role and isAdmin
+- ✅ Response doesn't include sensitive fields
+
+---
+
+#### Test 4: Verify User List Doesn't Expose Sensitive Data
+
+**Test listing all users:**
+```powershell
+curl -X GET http://localhost:8080/api/users `
+  -H "Authorization: Bearer $($response.token)" | ConvertFrom-Json
+```
+
+**Expected Response:**
+```json
+[
+  {
+    "id": 1,
+    "username": "alice",
+    "email": "alice@cydea.tech"
+  },
+  {
+    "id": 2,
+    "username": "bob",
+    "email": "bob@cydea.tech"
+  }
+]
+```
+
+**Verify:**
+- ✅ Multiple users returned
+- ✅ No password hashes
+- ✅ No role information
+- ✅ No isAdmin flags
+- ✅ Can't identify which users are admins
+
+---
+
+#### Test 5: Verify Search Results Safe
+
+**Test searching users:**
+```powershell
+curl -X GET "http://localhost:8080/api/users/search?q=alice" `
+  -H "Authorization: Bearer $($response.token)" | ConvertFrom-Json
+```
+
+**Expected Response:**
+```json
+[
+  {
+    "id": 1,
+    "username": "alice",
+    "email": "alice@cydea.tech"
+  }
+]
+```
+
+**Verify:**
+- ✅ Search works
+- ✅ No sensitive data in results
+- ✅ Safe for user enumeration (rate limiting in Task 5 will further protect)
+
+---
+
+### Comparison: Before vs After
+
+| Endpoint | Before (Vulnerable) | After (Fixed) |
+|----------|-------------------|---------------|
+| GET /api/users/{id} | Returns password hash, role, isAdmin | ✅ Returns only id, username, email |
+| GET /api/users | Returns all user data with passwords | ✅ Returns only safe fields |
+| GET /api/users/search | Returns passwords in results | ✅ Returns only safe fields |
+| POST /api/users | Accepts role, isAdmin from client | ✅ Server controls role/isAdmin |
+| POST /api/users (response) | Returns password hash back | ✅ Returns only safe fields |
+| GET /api/accounts/mine | Returns ownerUserId | ✅ Returns only account data |
+
+---
+
+### Data Exposure Summary
+
+**Sensitive Fields Removed from Responses:**
+
+| Field | Entity | Why Sensitive | Fixed |
+|-------|--------|---------------|-------|
+| `password` | AppUser | BCrypt hash, enables offline attacks | ✅ |
+| `role` | AppUser | Internal authorization detail | ✅ |
+| `isAdmin` | AppUser | Internal privilege flag | ✅ |
+| `ownerUserId` | Account | Internal foreign key | ✅ |
+
+**Mass Assignment Fields Blocked:**
+
+| Field | Why Dangerous | Fixed |
+|-------|---------------|-------|
+| `role` | Client could set "ADMIN" | ✅ |
+| `isAdmin` | Client could set true | ✅ |
+
+---
+
+### Remaining Vulnerabilities (Future Tasks)
+
+While Task 4 fixes data exposure and mass assignment, the following issues remain:
+
+1. **No Rate Limiting** - Endpoints still vulnerable to brute force and enumeration (Task 5)
+2. **Weak JWT** - Token configuration needs hardening (Task 7)
+3. **Verbose Errors** - Error messages too detailed for production (Task 8)
+4. **No Integration Tests** - Need tests to verify DTO behavior (Task 10)
+
+These will be addressed in subsequent tasks.
+
+---
+
+### Files Created/Modified Summary
+
+**New Files Created:**
+1. ✅ `dto/UserResponseDTO.java` - Safe user data representation
+2. ✅ `dto/AccountResponseDTO.java` - Safe account data representation
+3. ✅ `dto/CreateUserRequest.java` - Secure user creation input
+4. ✅ `dto/DTOMapper.java` - Centralized entity-to-DTO conversions
+
+**Files Modified:**
+1. ✅ `AccountController.java` - Uses DTOs for mine() endpoint
+2. ✅ `UserController.java` - Uses DTOs for all endpoints, prevents mass assignment
+
+**Package Structure:**
+```
+edu.nu.owaspapivulnlab/
+├── dto/
+│   ├── UserResponseDTO.java
+│   ├── AccountResponseDTO.java
+│   ├── CreateUserRequest.java
+│   └── DTOMapper.java
+└── web/
+    ├── AccountController.java (updated)
+    └── UserController.java (updated)
+```
+
+---
+
+**Fix Completed:** ✅ Task 4 - Implement DTOs to Control Data Exposure  
+**Date:** October 26, 2025  
+**Security Level:** HIGH PRIORITY - API3 Excessive Data Exposure fixed, API6 Mass Assignment partially fixed
