@@ -17,7 +17,7 @@ public class AppUser {
     @NotBlank
     private String password;
 
-    // VULNERABILITY(API6: Mass Assignment): role and isAdmin are bindable via incoming JSON
+    // FIXED VULNERABILITY IN USER CONTROLLER:using DTO and setting role/isAdmin manually VULNERABILITY(API6: Mass Assignment): role and isAdmin are bindable via incoming JSON
     private String role;   // e.g., "USER" or "ADMIN"
     private boolean isAdmin;
 

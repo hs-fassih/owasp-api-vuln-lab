@@ -26,9 +26,24 @@ public class UserController {
     }
 
     // VULNERABILITY(API6: Mass Assignment) - binds role/isAdmin from client
+    // --- Safe DTO (inner or top-level class) ---
+    record UserRegistrationDTO(
+        @NotBlank String username,
+        @NotBlank String password,
+        @Email String email
+    ){}
+
+   // FIXED: Prevent mass assignment by using DTO and setting role/isAdmin manually
     @PostMapping
-    public AppUser create(@Valid @RequestBody AppUser body) {
-        return users.save(body);
+    public AppUser create(@Valid @RequestBody UserRegistrationDTO body) {
+        AppUser user = AppUser.builder()
+            .username(body.username())
+            .password(body.password())  // In production, hash this!
+            .email(body.email())
+            .role("USER")               // Default safe role
+            .isAdmin(false)             // Prevent privilege escalation
+            .build();
+        return users.save(user);
     }
 
     // VULNERABILITY(API9: Improper Inventory + API8 Injection style): naive 'search' that can be abused for enumeration
