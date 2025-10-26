@@ -16,6 +16,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
+// TASK 5 FIX: Import rate limiting filter to protect against API abuse
 import org.springframework.web.filter.OncePerRequestFilter;
 import io.jsonwebtoken.*;
 
@@ -27,6 +28,13 @@ public class SecurityConfig {
 
     @Value("${app.jwt.secret}")
     private String secret;
+    
+    // TASK 5 FIX: Inject rate limiting filter
+    private final RateLimitingFilter rateLimitingFilter;
+    
+    public SecurityConfig(RateLimitingFilter rateLimitingFilter) {
+        this.rateLimitingFilter = rateLimitingFilter;
+    }
 
     // FIX(Task 1): Add PasswordEncoder bean for BCrypt password hashing
     // This replaces plaintext password storage with secure BCrypt hashes
@@ -63,6 +71,11 @@ public class SecurityConfig {
 
         // Allow H2 console frames
         http.headers(h -> h.frameOptions(f -> f.disable()));
+
+        // TASK 5 FIX: Add rate limiting filter BEFORE JWT filter
+        // This ensures rate limits are enforced even before JWT validation
+        // Prevents attackers from overwhelming the system with invalid tokens
+        http.addFilterBefore(rateLimitingFilter, org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter.class);
 
         // FIX(Task 2): Add JWT filter before authentication filter
         http.addFilterBefore(new JwtFilter(secret), org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter.class);

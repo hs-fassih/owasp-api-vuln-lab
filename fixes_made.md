@@ -5,6 +5,7 @@
 2. [Task 2: Tighten SecurityFilterChain](#task-2-tighten-securityfilterchain)
 3. [Task 3: Enforce Ownership in Controllers](#task-3-enforce-ownership-in-controllers)
 4. [Task 4: Implement DTOs to Control Data Exposure](#task-4-implement-dtos-to-control-data-exposure)
+5. [Task 5: Add Rate Limiting](#task-5-add-rate-limiting)
 
 ---
 
@@ -2173,3 +2174,498 @@ edu.nu.owaspapivulnlab/
 **Fix Completed:** ✅ Task 4 - Implement DTOs to Control Data Exposure  
 **Date:** October 26, 2025  
 **Security Level:** HIGH PRIORITY - API3 Excessive Data Exposure fixed, API6 Mass Assignment partially fixed
+
+---
+
+## Task 5: Add Rate Limiting
+
+### Overview
+Implemented rate limiting using Bucket4j to protect sensitive API endpoints from brute force attacks, API abuse, and denial of service. Different rate limits are applied based on endpoint sensitivity to balance security with usability.
+
+### Vulnerability Description
+**OWASP API Security Category:** API4:2023 - Unrestricted Resource Consumption
+
+**Original Issue:**
+- No rate limiting on any endpoints
+- Attackers could make unlimited requests to sensitive endpoints
+- Vulnerable to brute force attacks on `/api/auth/login`
+- Vulnerable to spam attacks on `/api/auth/signup`
+- Vulnerable to transaction abuse on `/api/accounts/transfer`
+- Vulnerable to expensive query abuse on `/api/users/search`
+- Could lead to denial of service by overwhelming the API
+- No protection against automated attacks or bot traffic
+
+**Example Attack Scenarios:**
+1. **Brute Force Attack:** Attacker tries thousands of password combinations on login endpoint
+2. **Spam Registration:** Automated bot creates hundreds of fake user accounts
+3. **Transaction Abuse:** Attacker floods transfer endpoint to disrupt service or exploit race conditions
+4. **Search Abuse:** Attacker runs expensive search queries repeatedly to degrade performance
+
+### Changes Made
+
+#### 1. pom.xml
+**Location:** `pom.xml`
+
+**Changes:**
+- Added Bucket4j dependency for rate limiting functionality
+
+**Code Added:**
+```xml
+<!-- TASK 5 FIX: Add Bucket4j for rate limiting to prevent API abuse -->
+<dependency>
+  <groupId>com.bucket4j</groupId>
+  <artifactId>bucket4j-core</artifactId>
+  <version>8.7.0</version>
+</dependency>
+```
+
+**Impact:** Enables token bucket algorithm for flexible rate limiting with configurable refill rates.
+
+---
+
+#### 2. RateLimitingFilter.java (NEW FILE)
+**Location:** `src/main/java/edu/nu/owaspapivulnlab/config/RateLimitingFilter.java`
+
+**Purpose:** Servlet filter that intercepts all requests and enforces rate limits based on client IP address and endpoint.
+
+**Key Components:**
+
+**a) Token Bucket Storage:**
+```java
+// Store buckets per IP address to track rate limits independently
+private final Map<String, Bucket> ipBuckets = new ConcurrentHashMap<>();
+```
+- Uses `ConcurrentHashMap` for thread-safe bucket storage
+- Each IP address gets its own set of buckets
+- Buckets are created on-demand and cached for performance
+
+**b) Rate Limit Enforcement:**
+```java
+@Override
+protected void doFilterInternal(HttpServletRequest request, 
+                                HttpServletResponse response, 
+                                FilterChain filterChain) 
+        throws ServletException, IOException {
+    
+    // Get client IP address (consider X-Forwarded-For in production with proxy)
+    String clientIp = getClientIp(request);
+    String requestUri = request.getRequestURI();
+    
+    // Get or create bucket for this IP with appropriate rate limit
+    Bucket bucket = resolveBucket(clientIp, requestUri);
+    
+    // Try to consume 1 token from the bucket
+    if (bucket.tryConsume(1)) {
+        // Token available - allow request to proceed
+        filterChain.doFilter(request, response);
+    } else {
+        // No tokens available - rate limit exceeded
+        response.setStatus(HttpStatus.TOO_MANY_REQUESTS.value());
+        response.setContentType("application/json");
+        response.getWriter().write(
+            "{\"error\":\"Too many requests. Please try again later.\",\"status\":429}"
+        );
+    }
+}
+```
+
+**c) Endpoint-Specific Rate Limits:**
+```java
+if (requestUri.startsWith("/api/auth/login")) {
+    // CRITICAL: Login endpoint - strict rate limit to prevent brute force
+    // 5 requests per minute = 1 request every 12 seconds
+    limit = Bandwidth.builder()
+            .capacity(5)
+            .refillIntervally(5, Duration.ofMinutes(1))
+            .build();
+} else if (requestUri.startsWith("/api/auth/signup")) {
+    // CRITICAL: Signup endpoint - prevent spam registration
+    // 3 requests per minute = 1 request every 20 seconds
+    limit = Bandwidth.builder()
+            .capacity(3)
+            .refillIntervally(3, Duration.ofMinutes(1))
+            .build();
+} else if (requestUri.startsWith("/api/accounts/transfer")) {
+    // HIGH: Transfer endpoint - prevent transaction abuse
+    // 10 requests per minute = 1 request every 6 seconds
+    limit = Bandwidth.builder()
+            .capacity(10)
+            .refillIntervally(10, Duration.ofMinutes(1))
+            .build();
+} else if (requestUri.startsWith("/api/users/search")) {
+    // MEDIUM: Search endpoint - prevent expensive query abuse
+    // 20 requests per minute = 1 request every 3 seconds
+    limit = Bandwidth.builder()
+            .capacity(20)
+            .refillIntervally(20, Duration.ofMinutes(1))
+            .build();
+} else {
+    // LOW: General endpoints - standard protection
+    // 100 requests per minute
+    limit = Bandwidth.builder()
+            .capacity(100)
+            .refillIntervally(100, Duration.ofMinutes(1))
+            .build();
+}
+```
+
+**Rate Limit Strategy:**
+- **Login (5/min):** Prevents brute force password guessing
+- **Signup (3/min):** Prevents automated account creation spam
+- **Transfer (10/min):** Prevents transaction flooding and race condition exploitation
+- **Search (20/min):** Prevents expensive query abuse
+- **General (100/min):** Protects all other endpoints from DoS
+
+**d) IP Address Extraction:**
+```java
+private String getClientIp(HttpServletRequest request) {
+    // Check for proxy headers first (X-Forwarded-For)
+    String xForwardedFor = request.getHeader("X-Forwarded-For");
+    if (xForwardedFor != null && !xForwardedFor.isEmpty()) {
+        // X-Forwarded-For can contain multiple IPs, take the first one
+        return xForwardedFor.split(",")[0].trim();
+    }
+    
+    // Fallback to remote address
+    return request.getRemoteAddr();
+}
+```
+- Handles proxy/load balancer scenarios by checking `X-Forwarded-For` header
+- Falls back to `remoteAddr` for direct connections
+- Ensures accurate IP-based rate limiting
+
+**Impact:** 
+- Prevents brute force attacks on authentication endpoints
+- Mitigates denial of service attacks
+- Protects expensive operations from abuse
+- Maintains API availability for legitimate users
+
+---
+
+#### 3. SecurityConfig.java
+**Location:** `src/main/java/edu/nu/owaspapivulnlab/config/SecurityConfig.java`
+
+**Changes:**
+- Injected `RateLimitingFilter` via constructor
+- Registered rate limiting filter in the security filter chain
+- Positioned rate limiting filter BEFORE JWT filter for early rejection
+
+**Code Added:**
+
+**Constructor Injection:**
+```java
+// TASK 5 FIX: Inject rate limiting filter
+private final RateLimitingFilter rateLimitingFilter;
+
+public SecurityConfig(RateLimitingFilter rateLimitingFilter) {
+    this.rateLimitingFilter = rateLimitingFilter;
+}
+```
+
+**Filter Registration:**
+```java
+// TASK 5 FIX: Add rate limiting filter BEFORE JWT filter
+// This ensures rate limits are enforced even before JWT validation
+// Prevents attackers from overwhelming the system with invalid tokens
+http.addFilterBefore(rateLimitingFilter, 
+    org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter.class);
+
+// FIX(Task 2): Add JWT filter before authentication filter
+http.addFilterBefore(new JwtFilter(secret), 
+    org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter.class);
+```
+
+**Impact:** 
+- Rate limiting applied to ALL requests, including unauthenticated ones
+- Attackers can't bypass rate limits by sending invalid tokens
+- Protects JWT validation logic from being overwhelmed
+
+---
+
+### Before vs After Comparison
+
+#### Before (Vulnerable):
+```bash
+# Attacker can make unlimited login attempts
+for i in {1..1000}; do
+  curl -X POST http://localhost:8080/api/auth/login \
+    -H 'Content-Type: application/json' \
+    -d '{"username":"alice","password":"guess'$i'"}'
+done
+# All 1000 requests succeed (even though passwords are wrong)
+# Server processes all brute force attempts
+
+# Attacker can spam signup endpoint
+for i in {1..100}; do
+  curl -X POST http://localhost:8080/api/auth/signup \
+    -H 'Content-Type: application/json' \
+    -d '{"username":"spam'$i'","password":"pass","email":"spam'$i'@test.com"}'
+done
+# All 100 accounts created successfully
+```
+
+#### After (Fixed):
+```bash
+# Attacker tries brute force on login
+for i in {1..10}; do
+  curl -X POST http://localhost:8080/api/auth/login \
+    -H 'Content-Type: application/json' \
+    -d '{"username":"alice","password":"guess'$i'"}'
+  echo "Attempt $i"
+done
+
+# Response after 5 attempts:
+# Attempt 1-5: {"error":"Invalid credentials"}  # Normal auth failure
+# Attempt 6+: {"error":"Too many requests. Please try again later.","status":429}
+# HTTP Status: 429 Too Many Requests
+
+# Attacker tries spam signup
+for i in {1..5}; do
+  curl -X POST http://localhost:8080/api/auth/signup \
+    -H 'Content-Type: application/json' \
+    -d '{"username":"spam'$i'","password":"pass","email":"spam'$i'@test.com"}'
+  echo "Attempt $i"
+done
+
+# Response after 3 attempts:
+# Attempt 1-3: {"id":..., "username":"spam1"...}  # Success
+# Attempt 4+: {"error":"Too many requests. Please try again later.","status":429}
+# HTTP Status: 429 Too Many Requests
+```
+
+---
+
+### Testing Procedures
+
+#### Test 1: Login Rate Limit (5 requests/minute)
+```bash
+# Test brute force protection
+for i in {1..7}; do
+  curl -v -X POST http://localhost:8080/api/auth/login \
+    -H 'Content-Type: application/json' \
+    -d '{"username":"alice","password":"wrong'$i'"}'
+  echo "\n--- Attempt $i completed ---\n"
+done
+
+# Expected Results:
+# Attempts 1-5: HTTP 401 Unauthorized (invalid credentials)
+# Attempts 6-7: HTTP 429 Too Many Requests (rate limit exceeded)
+# Response: {"error":"Too many requests. Please try again later.","status":429}
+
+# Wait 60 seconds and try again
+sleep 60
+curl -X POST http://localhost:8080/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"alice123"}'
+# Expected: HTTP 200 OK (tokens refilled, request allowed)
+```
+
+#### Test 2: Signup Rate Limit (3 requests/minute)
+```bash
+# Test spam registration protection
+for i in {1..5}; do
+  curl -v -X POST http://localhost:8080/api/auth/signup \
+    -H 'Content-Type: application/json' \
+    -d '{"username":"test'$i'","password":"pass123","email":"test'$i'@example.com"}'
+  echo "\n--- Signup attempt $i completed ---\n"
+done
+
+# Expected Results:
+# Attempts 1-3: HTTP 200 OK (accounts created)
+# Attempts 4-5: HTTP 429 Too Many Requests (rate limit exceeded)
+```
+
+#### Test 3: Transfer Rate Limit (10 requests/minute)
+```bash
+# First, login as alice to get JWT
+TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"alice123"}' | jq -r '.token')
+
+# Test transfer rate limit
+for i in {1..12}; do
+  curl -v -X POST http://localhost:8080/api/accounts/transfer \
+    -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d '{"fromId":1,"toId":2,"amount":1}'
+  echo "\n--- Transfer attempt $i completed ---\n"
+done
+
+# Expected Results:
+# Attempts 1-10: HTTP 200/400 (depending on balance, but request processed)
+# Attempts 11-12: HTTP 429 Too Many Requests (rate limit exceeded)
+```
+
+#### Test 4: Search Rate Limit (20 requests/minute)
+```bash
+# Get admin token (bob)
+TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"bob","password":"bob123"}' | jq -r '.token')
+
+# Test search rate limit
+for i in {1..25}; do
+  curl -v http://localhost:8080/api/users/search?query=alice \
+    -H "Authorization: Bearer $TOKEN"
+  echo "\n--- Search attempt $i completed ---\n"
+done
+
+# Expected Results:
+# Attempts 1-20: HTTP 200 OK (search results returned)
+# Attempts 21-25: HTTP 429 Too Many Requests (rate limit exceeded)
+```
+
+#### Test 5: Different IPs Get Independent Buckets
+```bash
+# Simulate two different clients using different IPs
+# (In production, X-Forwarded-For would differentiate them)
+
+# Client 1: Make 5 login attempts
+for i in {1..5}; do
+  curl -X POST http://localhost:8080/api/auth/login \
+    -H 'Content-Type: application/json' \
+    -d '{"username":"alice","password":"wrong"}'
+done
+
+# Client 2: Should still have their own 5 attempts
+# (In testing, this will share the same IP unless using proxy)
+# In production with load balancers, different X-Forwarded-For headers
+# would result in independent rate limits
+```
+
+---
+
+### Security Benefits
+
+#### 1. Brute Force Protection
+- **Before:** Attackers could try unlimited password combinations
+- **After:** Maximum 5 login attempts per minute per IP
+- **Impact:** Makes password guessing attacks impractical
+
+#### 2. Spam Prevention
+- **Before:** Bots could create thousands of fake accounts
+- **After:** Maximum 3 signups per minute per IP
+- **Impact:** Significantly reduces automated account creation
+
+#### 3. Transaction Abuse Prevention
+- **Before:** Attackers could flood transfer endpoint
+- **After:** Maximum 10 transfers per minute per IP
+- **Impact:** Prevents transaction flooding and race condition exploitation
+
+#### 4. Resource Protection
+- **Before:** Expensive search queries could be run unlimited times
+- **After:** Maximum 20 searches per minute per IP
+- **Impact:** Protects database and server resources
+
+#### 5. Denial of Service Mitigation
+- **Before:** Single attacker could overwhelm the API
+- **After:** All endpoints have rate limits
+- **Impact:** Maintains API availability for legitimate users
+
+#### 6. Early Detection
+- **Before:** No visibility into abuse patterns
+- **After:** 429 responses indicate potential attacks
+- **Impact:** Enables monitoring and alerting on suspicious activity
+
+---
+
+### Token Bucket Algorithm Explained
+
+Bucket4j implements the **Token Bucket Algorithm**:
+
+1. **Bucket Capacity:** Maximum number of tokens (requests) that can be stored
+2. **Refill Rate:** How quickly tokens are added back to the bucket
+3. **Token Consumption:** Each request consumes 1 token
+4. **Blocking:** If no tokens available, request is rejected with 429
+
+**Example for Login (5 tokens, refill 5 per minute):**
+```
+Time    Tokens  Action
+-----   ------  ------
+00:00   5       Initial state
+00:01   4       Login attempt 1 ✓
+00:02   3       Login attempt 2 ✓
+00:03   2       Login attempt 3 ✓
+00:04   1       Login attempt 4 ✓
+00:05   0       Login attempt 5 ✓
+00:06   0       Login attempt 6 ✗ (429 Too Many Requests)
+01:00   5       Tokens refilled (5 tokens added)
+01:01   4       Login attempt 7 ✓ (allowed after refill)
+```
+
+**Advantages:**
+- Allows bursts up to capacity
+- Smooth refill over time
+- Fair distribution of resources
+- No need for persistent storage (in-memory)
+
+---
+
+### Production Considerations
+
+#### 1. Distributed Systems
+Current implementation uses in-memory storage (`ConcurrentHashMap`). For multi-instance deployments:
+- Use Redis-backed Bucket4j: `bucket4j-redis`
+- Share rate limit state across all API instances
+- Ensures consistent rate limiting regardless of which instance handles the request
+
+```xml
+<!-- For production with multiple instances -->
+<dependency>
+  <groupId>com.bucket4j</groupId>
+  <artifactId>bucket4j-redis</artifactId>
+  <version>8.7.0</version>
+</dependency>
+```
+
+#### 2. IP Address Extraction
+Current implementation checks `X-Forwarded-For` header:
+- Ensure load balancer/proxy sets this header correctly
+- Consider validating against trusted proxy list
+- Be aware of header spoofing in untrusted networks
+
+#### 3. Rate Limit Tuning
+Current limits are conservative. Consider:
+- Monitoring actual usage patterns
+- Adjusting limits based on legitimate user behavior
+- Different limits for authenticated vs unauthenticated users
+- Premium users might get higher limits
+
+#### 4. Response Headers
+Consider adding rate limit headers for better client experience:
+```java
+response.setHeader("X-RateLimit-Limit", "5");
+response.setHeader("X-RateLimit-Remaining", "0");
+response.setHeader("X-RateLimit-Reset", "60"); // seconds until reset
+```
+
+#### 5. Monitoring & Alerting
+- Log 429 responses for security monitoring
+- Alert on sustained high rate of 429s (potential attack)
+- Track which endpoints are most frequently rate-limited
+- Monitor bucket memory usage
+
+---
+
+### Related OWASP Fixes
+
+This fix complements other security measures:
+- **Task 1 (BCrypt):** Rate limiting makes brute force even less effective
+- **Task 2 (SecurityFilterChain):** Rate limiting applied before authentication
+- **Task 3 (Ownership):** Rate limiting protects ownership checks from DoS
+- **Task 4 (DTOs):** Rate limiting prevents mass data extraction attempts
+
+---
+
+### Files Modified
+
+1. ✅ `pom.xml` - Added Bucket4j dependency
+2. ✅ `RateLimitingFilter.java` (NEW) - Implemented rate limiting filter with endpoint-specific limits
+3. ✅ `SecurityConfig.java` - Injected and registered rate limiting filter in security chain
+
+---
+
+**Fix Completed:** ✅ Task 5 - Add Rate Limiting  
+**Date:** October 26, 2025  
+**Security Level:** CRITICAL - API4 Unrestricted Resource Consumption fixed
+
