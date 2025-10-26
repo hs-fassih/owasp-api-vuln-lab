@@ -13,6 +13,10 @@ import edu.nu.owaspapivulnlab.repo.AppUserRepository;
 import edu.nu.owaspapivulnlab.dto.UserResponseDTO;
 import edu.nu.owaspapivulnlab.dto.CreateUserRequest;
 import edu.nu.owaspapivulnlab.dto.DTOMapper;
+// TASK 8 FIX: Import custom exceptions for proper error handling
+import edu.nu.owaspapivulnlab.exception.AccessDeniedException;
+import edu.nu.owaspapivulnlab.exception.ResourceNotFoundException;
+import edu.nu.owaspapivulnlab.exception.ValidationException;
 
 import java.util.HashMap;
 import java.util.List;
@@ -42,20 +46,21 @@ public class UserController {
         }
         
         // FIX(Task 3): Get the authenticated user
+        // TASK 8 FIX: Use ResourceNotFoundException for consistent error handling
         AppUser currentUser = users.findByUsername(auth.getName())
-                .orElseThrow(() -> new RuntimeException("User not found"));
+                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
         
         // FIX(Task 3): Verify ownership or admin privilege
         // Users can only view their own profile, unless they are admins
+        // TASK 8 FIX: Use AccessDeniedException for consistent error handling
         if (!currentUser.getId().equals(id) && !currentUser.isAdmin()) {
-            Map<String, String> error = new HashMap<>();
-            error.put("error", "Access denied - you can only view your own profile");
-            return ResponseEntity.status(403).body(error);
+            throw new AccessDeniedException("Access denied - you can only view your own profile");
         }
         
         // Get the requested user
+        // TASK 8 FIX: Use ResourceNotFoundException for consistent error handling
         AppUser user = users.findById(id)
-                .orElseThrow(() -> new RuntimeException("User not found"));
+                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
         
         // FIX(Task 4): Return DTO instead of full entity to avoid exposing sensitive data
         // Prevents exposing password hash, role, and isAdmin flag
@@ -76,20 +81,19 @@ public class UserController {
         }
         
         // FIX(Task 3): Only admins can create users
+        // TASK 8 FIX: Use ResourceNotFoundException for consistent error handling
         AppUser currentUser = users.findByUsername(auth.getName())
-                .orElseThrow(() -> new RuntimeException("User not found"));
+                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
         
+        // TASK 8 FIX: Use AccessDeniedException for consistent error handling
         if (!currentUser.isAdmin()) {
-            Map<String, String> error = new HashMap<>();
-            error.put("error", "Access denied - admin privileges required");
-            return ResponseEntity.status(403).body(error);
+            throw new AccessDeniedException("Access denied - admin privileges required");
         }
         
         // Check if username already exists
+        // TASK 8 FIX: Use ValidationException for consistent error handling
         if (users.findByUsername(body.getUsername()).isPresent()) {
-            Map<String, String> error = new HashMap<>();
-            error.put("error", "Username already exists");
-            return ResponseEntity.status(400).body(error);
+            throw new ValidationException("Username already exists");
         }
         
         // FIX(Task 6): Create user with safe defaults - server controls role/isAdmin
@@ -161,28 +165,26 @@ public class UserController {
         }
         
         // FIX(Task 3): Get the authenticated user
+        // TASK 8 FIX: Use ResourceNotFoundException for consistent error handling
         AppUser currentUser = users.findByUsername(auth.getName())
-                .orElseThrow(() -> new RuntimeException("User not found"));
+                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
         
         // FIX(Task 3): Only admins can delete users (prevent privilege escalation)
+        // TASK 8 FIX: Use AccessDeniedException for consistent error handling
         if (!currentUser.isAdmin()) {
-            Map<String, String> error = new HashMap<>();
-            error.put("error", "Access denied - admin privileges required");
-            return ResponseEntity.status(403).body(error);
+            throw new AccessDeniedException("Access denied - admin privileges required");
         }
         
         // FIX(Task 3): Prevent admins from deleting themselves
+        // TASK 8 FIX: Use ValidationException for consistent error handling
         if (currentUser.getId().equals(id)) {
-            Map<String, String> error = new HashMap<>();
-            error.put("error", "You cannot delete your own account");
-            return ResponseEntity.status(400).body(error);
+            throw new ValidationException("You cannot delete your own account");
         }
         
         // Verify user exists before deletion
+        // TASK 8 FIX: Use ResourceNotFoundException for consistent error handling
         if (!users.existsById(id)) {
-            Map<String, String> error = new HashMap<>();
-            error.put("error", "User not found");
-            return ResponseEntity.status(404).body(error);
+            throw new ResourceNotFoundException("User not found");
         }
         
         users.deleteById(id);

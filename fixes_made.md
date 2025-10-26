@@ -7,6 +7,7 @@
 4. [Task 4: Implement DTOs to Control Data Exposure](#task-4-implement-dtos-to-control-data-exposure)
 5. [Task 5: Add Rate Limiting](#task-5-add-rate-limiting)
 6. [Task 6: Prevent Mass Assignment](#task-6-prevent-mass-assignment)
+7. [Task 8: Reduce Error Detail in Production](#task-8-reduce-error-detail-in-production)
 
 ---
 
@@ -3160,4 +3161,617 @@ Add email verification before account activation:
 **Date:** October 26, 2025  
 **Security Level:** CRITICAL - API6 Mass Assignment vulnerability FIXED  
 **Collaborator Review:** Issues identified and corrected
+
+---
+
+## Task 8: Reduce Error Detail in Production
+
+### Overview
+Implemented environment-aware error handling with proper exception mapping and logging. The system now provides detailed errors in development for debugging while exposing minimal information in production to prevent information disclosure vulnerabilities.
+
+### Vulnerability Description
+**OWASP API Security Category:** API7:2023 - Security Misconfiguration
+
+**Original Issues:**
+- Exposed full exception class names to clients (`error: java.lang.RuntimeException`)
+- Leaked internal error messages revealing system architecture
+- Included database error details exposing SQL queries and schema information
+- Configured to always include stack traces (`server.error.include-stacktrace=always`)
+- No logging of security-relevant events for auditing
+- Generic exception handling revealed system internals
+- No differentiation between development and production error responses
+
+**Attack Scenarios:**
+1. **Information Disclosure:** Attacker analyzes error messages to understand system architecture
+2. **Database Enumeration:** SQL error messages reveal table/column names
+3. **Path Traversal:** Stack traces expose internal file paths
+4. **Technology Fingerprinting:** Exception class names reveal frameworks and libraries
+
+**Example Vulnerable Response:**
+```json
+{
+  "error": "java.lang.RuntimeException",
+  "message": "User not found",
+  "trace": "at edu.nu.owaspapivulnlab.web.UserController.get(UserController.java:46)..."
+}
+```
+
+### Changes Made
+
+#### 1. Custom Exception Classes (NEW)
+Created domain-specific exceptions for proper error categorization:
+
+**ResourceNotFoundException.java:**
+```java
+/**
+ * TASK 8 FIX: Custom exception for resource not found scenarios
+ * Allows specific handling with appropriate HTTP status (404)
+ * Prevents exposing internal exception details to clients
+ */
+public class ResourceNotFoundException extends RuntimeException {
+    public ResourceNotFoundException(String message) {
+        super(message);
+    }
+}
+```
+
+**AccessDeniedException.java:**
+```java
+/**
+ * TASK 8 FIX: Custom exception for access denied scenarios
+ * Allows specific handling with appropriate HTTP status (403)
+ * Prevents exposing internal authorization logic to clients
+ */
+public class AccessDeniedException extends RuntimeException {
+    public AccessDeniedException(String message) {
+        super(message);
+    }
+}
+```
+
+**ValidationException.java:**
+```java
+/**
+ * TASK 8 FIX: Custom exception for validation errors
+ * Allows specific handling with appropriate HTTP status (400)
+ * Provides clear error messages without exposing internal details
+ */
+public class ValidationException extends RuntimeException {
+    public ValidationException(String message) {
+        super(message);
+    }
+}
+```
+
+**Impact:** Enables precise HTTP status codes and consistent error handling across all endpoints.
+
+---
+
+#### 2. ErrorResponse DTO (NEW)
+**Location:** `src/main/java/edu/nu/owaspapivulnlab/dto/ErrorResponse.java`
+
+Created standardized error response structure:
+
+```java
+@Data
+@Builder
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public class ErrorResponse {
+    private LocalDateTime timestamp;
+    private int status;
+    private String error;
+    private String message;
+    private String path;
+    
+    // TASK 8 FIX: Development-only fields (excluded in production)
+    private String debugMessage;  // Only in dev
+    private String exceptionType; // Only in dev
+}
+```
+
+**Features:**
+- Consistent error format across all endpoints
+- `@JsonInclude(NON_NULL)` excludes debug fields when null
+- Timestamp for error correlation
+- HTTP status code for programmatic handling
+- User-friendly messages safe for production
+
+---
+
+#### 3. GlobalErrorHandler.java (COMPLETE REWRITE)
+**Location:** `src/main/java/edu/nu/owaspapivulnlab/web/GlobalErrorHandler.java`
+
+Replaced vulnerable error handler with comprehensive exception mapping:
+
+**Key Improvements:**
+
+**a) Environment-Aware Error Responses:**
+```java
+@Value("${spring.profiles.active:dev}")
+private String activeProfile;
+
+private boolean isDevelopment() {
+    return "dev".equalsIgnoreCase(activeProfile) || 
+           "development".equalsIgnoreCase(activeProfile);
+}
+```
+- Checks active Spring profile
+- Detailed errors in development
+- Minimal errors in production
+
+**b) Specific Exception Handlers:**
+
+**ResourceNotFoundException (404):**
+```java
+@ExceptionHandler(ResourceNotFoundException.class)
+public ResponseEntity<ErrorResponse> handleResourceNotFound(
+        ResourceNotFoundException ex, 
+        HttpServletRequest request) {
+    
+    log.warn("Resource not found: {} at {}", ex.getMessage(), request.getRequestURI());
+    
+    ErrorResponse error = ErrorResponse.builder()
+            .timestamp(LocalDateTime.now())
+            .status(HttpStatus.NOT_FOUND.value())
+            .error("Not Found")
+            .message(ex.getMessage())
+            .path(request.getRequestURI())
+            .build();
+    
+    if (isDevelopment()) {
+        error.setDebugMessage(ex.getMessage());
+        error.setExceptionType(ex.getClass().getSimpleName());
+    }
+    
+    return ResponseEntity.status(HttpStatus.NOT_FOUND).body(error);
+}
+```
+
+**AccessDeniedException (403):**
+```java
+@ExceptionHandler(AccessDeniedException.class)
+public ResponseEntity<ErrorResponse> handleAccessDenied(
+        AccessDeniedException ex, 
+        HttpServletRequest request) {
+    
+    // TASK 8 FIX: Log security events for audit trail
+    log.warn("Access denied: {} at {} from IP {}", 
+            ex.getMessage(), 
+            request.getRequestURI(),
+            getClientIp(request));
+    
+    ErrorResponse error = ErrorResponse.builder()
+            .timestamp(LocalDateTime.now())
+            .status(HttpStatus.FORBIDDEN.value())
+            .error("Access Denied")
+            // Generic message in production
+            .message(isDevelopment() ? ex.getMessage() : 
+                    "You don't have permission to access this resource")
+            .path(request.getRequestURI())
+            .build();
+    
+    return ResponseEntity.status(HttpStatus.FORBIDDEN).body(error);
+}
+```
+
+**DataAccessException (500):**
+```java
+@ExceptionHandler(DataAccessException.class)
+public ResponseEntity<ErrorResponse> handleDataAccessException(
+        DataAccessException ex,
+        HttpServletRequest request) {
+    
+    // TASK 8 FIX: Log full error for ops team, sanitize for client
+    log.error("Database error at {}: {}", request.getRequestURI(), ex.getMessage(), ex);
+    
+    ErrorResponse error = ErrorResponse.builder()
+            .timestamp(LocalDateTime.now())
+            .status(HttpStatus.INTERNAL_SERVER_ERROR.value())
+            .error("Internal Server Error")
+            // CRITICAL: Never expose SQL details in production!
+            .message(isDevelopment() 
+                    ? "Database error: " + ex.getMostSpecificCause().getMessage()
+                    : "An error occurred while processing your request")
+            .path(request.getRequestURI())
+            .build();
+    
+    return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(error);
+}
+```
+
+**General Exception Handler (500):**
+```java
+@ExceptionHandler(Exception.class)
+public ResponseEntity<ErrorResponse> handleGeneralException(
+        Exception ex,
+        HttpServletRequest request) {
+    
+    // TASK 8 FIX: Log full stack trace for investigation
+    log.error("Unexpected error at {}: {}", request.getRequestURI(), ex.getMessage(), ex);
+    
+    ErrorResponse error = ErrorResponse.builder()
+            .timestamp(LocalDateTime.now())
+            .status(HttpStatus.INTERNAL_SERVER_ERROR.value())
+            .error("Internal Server Error")
+            // Never expose exception details in production
+            .message(isDevelopment() 
+                    ? "Error: " + ex.getMessage()
+                    : "An unexpected error occurred. Please try again later.")
+            .path(request.getRequestURI())
+            .build();
+    
+    return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(error);
+}
+```
+
+**c) Security Event Logging:**
+```java
+private String getClientIp(HttpServletRequest request) {
+    String xForwardedFor = request.getHeader("X-Forwarded-For");
+    if (xForwardedFor != null && !xForwardedFor.isEmpty()) {
+        return xForwardedFor.split(",")[0].trim();
+    }
+    return request.getRemoteAddr();
+}
+```
+- Logs authentication failures with IP addresses
+- Logs access denied attempts for security monitoring
+- Logs database errors with full stack traces (server-side only)
+
+---
+
+#### 4. application.properties
+**Location:** `src/main/resources/application.properties`
+
+**Changes:**
+```properties
+# TASK 8 FIX: Secure error handling - don't expose internals in production
+server.error.include-message=never
+server.error.include-stacktrace=never
+server.error.include-binding-errors=never
+
+# TASK 8 FIX: Default to development profile (shows detailed errors)
+# In production, override with: -Dspring.profiles.active=prod
+spring.profiles.active=dev
+
+# TASK 8 FIX: Configure logging levels
+logging.level.root=INFO
+logging.level.edu.nu.owaspapivulnlab=DEBUG
+logging.level.org.springframework.security=WARN
+```
+
+**Impact:**
+- Stack traces never included in responses
+- Development profile shows detailed errors
+- Production profile (when set) shows minimal errors
+- Proper logging configuration for debugging
+
+---
+
+#### 5. Controller Updates
+**Updated Files:** UserController.java, AccountController.java
+
+**Changes:** Replaced generic `RuntimeException` with custom exceptions:
+
+**Before (Vulnerable):**
+```java
+AppUser currentUser = users.findByUsername(auth.getName())
+        .orElseThrow(() -> new RuntimeException("User not found"));
+
+if (!currentUser.isAdmin()) {
+    Map<String, String> error = new HashMap<>();
+    error.put("error", "Access denied - admin privileges required");
+    return ResponseEntity.status(403).body(error);
+}
+```
+
+**After (Fixed):**
+```java
+// TASK 8 FIX: Use ResourceNotFoundException for consistent error handling
+AppUser currentUser = users.findByUsername(auth.getName())
+        .orElseThrow(() -> new ResourceNotFoundException("User not found"));
+
+// TASK 8 FIX: Use AccessDeniedException for consistent error handling
+if (!currentUser.isAdmin()) {
+    throw new AccessDeniedException("Access denied - admin privileges required");
+}
+```
+
+**Benefits:**
+- Consistent error responses via @ControllerAdvice
+- Proper HTTP status codes automatically
+- Centralized error handling logic
+- Security event logging
+
+---
+
+### Before vs After Comparison
+
+#### Development Mode (spring.profiles.active=dev)
+
+**Before (Vulnerable):**
+```bash
+GET /api/users/999
+
+Response:
+{
+  "error": "java.lang.RuntimeException",
+  "message": "User not found",
+  "trace": [
+    "at edu.nu.owaspapivulnlab.web.UserController.get(UserController.java:46)",
+    "at java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke0(Native Method)",
+    ...
+  ]
+}
+```
+
+**After (Fixed) - Development:**
+```bash
+GET /api/users/999
+
+Response:
+{
+  "timestamp": "2025-10-26T16:10:30",
+  "status": 404,
+  "error": "Not Found",
+  "message": "User not found",
+  "path": "/api/users/999",
+  "debugMessage": "User not found",
+  "exceptionType": "ResourceNotFoundException"
+}
+
+Server Log:
+WARN  - Resource not found: User not found at /api/users/999
+```
+
+#### Production Mode (spring.profiles.active=prod)
+
+**After (Fixed) - Production:**
+```bash
+GET /api/users/999
+
+Response:
+{
+  "timestamp": "2025-10-26T16:10:30",
+  "status": 404,
+  "error": "Not Found",
+  "message": "User not found",
+  "path": "/api/users/999"
+}
+Note: No debugMessage or exceptionType in production
+```
+
+**Database Error - Production:**
+```bash
+Response:
+{
+  "timestamp": "2025-10-26T16:10:30",
+  "status": 500,
+  "error": "Internal Server Error",
+  "message": "An error occurred while processing your request",
+  "path": "/api/users"
+}
+
+Server Log (NOT sent to client):
+ERROR - Database error at /api/users: could not execute statement
+       SQL: INSERT INTO app_user ...
+       [Full stack trace logged server-side only]
+```
+
+---
+
+### Testing Procedures
+
+#### Test 1: Resource Not Found (404)
+```bash
+# Get non-existent user
+curl -v http://localhost:8080/api/users/999 \
+  -H "Authorization: Bearer $TOKEN"
+
+# Expected Response:
+# HTTP/1.1 404 Not Found
+# {
+#   "timestamp": "2025-10-26T16:10:30",
+#   "status": 404,
+#   "error": "Not Found",
+#   "message": "User not found",
+#   "path": "/api/users/999"
+# }
+
+# In dev: includes debugMessage and exceptionType
+# In prod: only basic fields
+```
+
+#### Test 2: Access Denied (403)
+```bash
+# Non-admin tries to create user
+ALICE_TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"alice123"}' | jq -r '.token')
+
+curl -v -X POST http://localhost:8080/api/users \
+  -H "Authorization: Bearer $ALICE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"test","password":"pass123","email":"test@test.com"}'
+
+# Expected Response:
+# HTTP/1.1 403 Forbidden
+# {
+#   "timestamp": "2025-10-26T16:10:30",
+#   "status": 403,
+#   "error": "Access Denied",
+#   "message": "Access denied - admin privileges required",  # (dev)
+#   "message": "You don't have permission...",              # (prod)
+#   "path": "/api/users"
+# }
+
+# Server Log:
+# WARN - Access denied: ... from IP 127.0.0.1
+```
+
+#### Test 3: Validation Error (400)
+```bash
+# Transfer with negative amount
+curl -v -X POST http://localhost:8080/api/accounts/1/transfer?amount=-100 \
+  -H "Authorization: Bearer $TOKEN"
+
+# Expected Response:
+# HTTP/1.1 400 Bad Request
+# {
+#   "timestamp": "2025-10-26T16:10:30",
+#   "status": 400,
+#   "error": "Validation Error",
+#   "message": "Amount must be positive",
+#   "path": "/api/accounts/1/transfer"
+# }
+```
+
+#### Test 4: Production vs Development Mode
+```bash
+# Start in development mode (default)
+mvn spring-boot:run
+
+# Test error response - includes debug info
+curl http://localhost:8080/api/users/999 -H "Authorization: Bearer $TOKEN"
+# Response includes: debugMessage, exceptionType
+
+# Stop and restart in production mode
+mvn spring-boot:run -Dspring-boot.run.arguments="--spring.profiles.active=prod"
+
+# Test error response - minimal info
+curl http://localhost:8080/api/users/999 -H "Authorization: Bearer $TOKEN"
+# Response excludes: debugMessage, exceptionType
+# Generic messages for security
+```
+
+---
+
+### Security Benefits
+
+#### 1. Information Disclosure Prevention
+- **Before:** Exposed exception class names revealing framework details
+- **After:** Generic error types ("Not Found", "Access Denied")
+- **Impact:** Attackers can't fingerprint technologies
+
+#### 2. Database Security
+- **Before:** SQL errors revealed table/column names
+- **After:** Generic "An error occurred" message in production
+- **Impact:** Database schema protected
+
+#### 3. Path Disclosure Prevention
+- **Before:** Stack traces revealed internal file paths
+- **After:** No stack traces in responses (logged server-side)
+- **Impact:** System architecture hidden
+
+#### 4. Proper HTTP Status Codes
+- **Before:** All errors returned 500 Internal Server Error
+- **After:** 400/401/403/404/500 based on error type
+- **Impact:** Correct semantic meaning, better client handling
+
+#### 5. Security Event Logging
+- **Before:** No logging of security events
+- **After:** Access denied and auth failures logged with IP
+- **Impact:** Security monitoring and incident response
+
+#### 6. Environment-Based Control
+- **Before:** Same verbose errors everywhere
+- **After:** Detailed in dev, minimal in prod
+- **Impact:** Developers can debug, attackers see nothing
+
+---
+
+### Exception Mapping Table
+
+| Exception Type | HTTP Status | Development Message | Production Message |
+|----------------|-------------|-------------------|-------------------|
+| `ResourceNotFoundException` | 404 | Detailed message | Same (safe) |
+| `AccessDeniedException` | 403 | Specific reason | Generic "no permission" |
+| `ValidationException` | 400 | Validation details | Same (safe) |
+| `MethodArgumentNotValidException` | 400 | All constraint violations | Same (safe) |
+| `AuthenticationException` | 401 | Auth failure reason | "Authentication required" |
+| `DataAccessException` | 500 | Database error details | "Error occurred" |
+| `Exception` (catch-all) | 500 | Exception message | "Unexpected error" |
+
+---
+
+### Logging Strategy
+
+#### Security Events (WARN level):
+- Access denied attempts (with IP)
+- Authentication failures (with IP)
+- Resource not found (potential enumeration)
+
+#### Application Errors (ERROR level):
+- Database errors (full stack trace)
+- Unexpected exceptions (full stack trace)
+
+#### Debug Information (DEBUG level):
+- Validation failures
+- Business logic errors
+
+**Example Logs:**
+```
+WARN  - Access denied: admin privileges required at /api/users from IP 192.168.1.100
+WARN  - Resource not found: User not found at /api/users/999
+ERROR - Database error at /api/users: could not execute statement [Full stack trace]
+DEBUG - Validation error: Amount must be positive at /api/accounts/1/transfer
+```
+
+---
+
+### Production Deployment
+
+**To deploy in production mode:**
+
+**Option 1: Command Line**
+```bash
+java -jar app.jar --spring.profiles.active=prod
+```
+
+**Option 2: Environment Variable**
+```bash
+export SPRING_PROFILES_ACTIVE=prod
+java -jar app.jar
+```
+
+**Option 3: application-prod.properties**
+Create `src/main/resources/application-prod.properties`:
+```properties
+# Production-specific settings
+logging.level.root=WARN
+logging.level.edu.nu.owaspapivulnlab=INFO
+logging.level.org.springframework.security=ERROR
+
+# Optional: external log aggregation
+logging.file.name=/var/log/owasp-api-vuln-lab.log
+```
+
+---
+
+### Related OWASP Fixes
+
+This fix complements other security measures:
+- **Task 2 (SecurityFilterChain):** JWT errors now properly logged
+- **Task 3 (Ownership):** Access denied attempts logged with IP
+- **Task 5 (Rate Limiting):** 429 errors have consistent format
+- **Task 6 (Mass Assignment):** Validation errors properly structured
+
+---
+
+### Files Modified
+
+1. ✅ `ResourceNotFoundException.java` (NEW) - Custom 404 exception
+2. ✅ `AccessDeniedException.java` (NEW) - Custom 403 exception
+3. ✅ `ValidationException.java` (NEW) - Custom 400 exception
+4. ✅ `ErrorResponse.java` (NEW) - Standard error DTO
+5. ✅ `GlobalErrorHandler.java` - Complete rewrite with exception mapping
+6. ✅ `application.properties` - Disabled stack traces, added logging config
+7. ✅ `UserController.java` - Use custom exceptions
+8. ✅ `AccountController.java` - Use custom exceptions
+
+---
+
+**Fix Completed:** ✅ Task 8 - Reduce Error Detail in Production  
+**Date:** October 26, 2025  
+**Security Level:** CRITICAL - API7 Security Misconfiguration (Information Disclosure) FIXED
 

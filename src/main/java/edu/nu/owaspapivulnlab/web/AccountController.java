@@ -10,6 +10,10 @@ import edu.nu.owaspapivulnlab.repo.AppUserRepository;
 // FIX(Task 4): Import DTOs for safe data exposure
 import edu.nu.owaspapivulnlab.dto.AccountResponseDTO;
 import edu.nu.owaspapivulnlab.dto.DTOMapper;
+// TASK 8 FIX: Import custom exceptions for proper error handling
+import edu.nu.owaspapivulnlab.exception.AccessDeniedException;
+import edu.nu.owaspapivulnlab.exception.ResourceNotFoundException;
+import edu.nu.owaspapivulnlab.exception.ValidationException;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -40,19 +44,20 @@ public class AccountController {
         }
         
         // FIX(Task 3): Get the authenticated user
+        // TASK 8 FIX: Use ResourceNotFoundException for consistent error handling
         AppUser currentUser = users.findByUsername(auth.getName())
-                .orElseThrow(() -> new RuntimeException("User not found"));
+                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
         
         // FIX(Task 3): Get the account and verify it exists
+        // TASK 8 FIX: Use ResourceNotFoundException for consistent error handling
         Account account = accounts.findById(id)
-                .orElseThrow(() -> new RuntimeException("Account not found"));
+                .orElseThrow(() -> new ResourceNotFoundException("Account not found"));
         
         // FIX(Task 3): Verify ownership - prevent BOLA/IDOR
         // User can only access their own accounts
+        // TASK 8 FIX: Use AccessDeniedException for consistent error handling
         if (!account.getOwnerUserId().equals(currentUser.getId())) {
-            Map<String, String> error = new HashMap<>();
-            error.put("error", "Access denied - you can only view your own accounts");
-            return ResponseEntity.status(403).body(error);
+            throw new AccessDeniedException("Access denied - you can only view your own accounts");
         }
         
         // Return balance in a structured response
@@ -74,41 +79,38 @@ public class AccountController {
         }
         
         // FIX(Task 9): Validate transfer amount
+        // TASK 8 FIX: Use ValidationException for consistent error handling
         if (amount == null || amount <= 0) {
-            Map<String, String> error = new HashMap<>();
-            error.put("error", "Amount must be positive");
-            return ResponseEntity.status(400).body(error);
+            throw new ValidationException("Amount must be positive");
         }
         
         // FIX(Task 9): Reject excessively large transfers
+        // TASK 8 FIX: Use ValidationException for consistent error handling
         if (amount > 1000000) {
-            Map<String, String> error = new HashMap<>();
-            error.put("error", "Amount exceeds maximum transfer limit of 1,000,000");
-            return ResponseEntity.status(400).body(error);
+            throw new ValidationException("Amount exceeds maximum transfer limit of 1,000,000");
         }
         
         // FIX(Task 3): Get the authenticated user
+        // TASK 8 FIX: Use ResourceNotFoundException for consistent error handling
         AppUser currentUser = users.findByUsername(auth.getName())
-                .orElseThrow(() -> new RuntimeException("User not found"));
+                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
         
         // FIX(Task 3): Get the account and verify it exists
+        // TASK 8 FIX: Use ResourceNotFoundException for consistent error handling
         Account account = accounts.findById(id)
-                .orElseThrow(() -> new RuntimeException("Account not found"));
+                .orElseThrow(() -> new ResourceNotFoundException("Account not found"));
         
         // FIX(Task 3): Verify ownership - prevent BOLA/IDOR
         // User can only transfer from their own accounts
+        // TASK 8 FIX: Use AccessDeniedException for consistent error handling
         if (!account.getOwnerUserId().equals(currentUser.getId())) {
-            Map<String, String> error = new HashMap<>();
-            error.put("error", "Access denied - you can only transfer from your own accounts");
-            return ResponseEntity.status(403).body(error);
+            throw new AccessDeniedException("Access denied - you can only transfer from your own accounts");
         }
         
         // FIX(Task 9): Check sufficient balance
+        // TASK 8 FIX: Use ValidationException for consistent error handling
         if (account.getBalance() < amount) {
-            Map<String, String> error = new HashMap<>();
-            error.put("error", "Insufficient balance");
-            error.put("available", String.valueOf(account.getBalance()));
-            return ResponseEntity.status(400).body(error);
+            throw new ValidationException("Insufficient balance. Available: " + account.getBalance());
         }
         
         // Perform transfer
