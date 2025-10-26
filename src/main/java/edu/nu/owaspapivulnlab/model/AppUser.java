@@ -12,8 +12,10 @@ public class AppUser {
     @NotBlank
     private String username;
 
-    // VULNERABILITY(API3: Excessive Data Exposure): storing plaintext passwords for demo
-    // Students should hash with BCrypt and use proper credential storage.
+    // FIX(Task 1): Password field now stores BCrypt hashed passwords instead of plaintext
+    // BCrypt hashes are one-way encrypted strings starting with $2a$ or $2b$
+    // Original vulnerability: stored plaintext passwords (e.g., "alice123")
+    // Fixed: passwords are hashed using BCryptPasswordEncoder before storage
     @NotBlank
     private String password;
 

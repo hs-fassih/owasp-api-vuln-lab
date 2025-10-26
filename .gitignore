@@ -1,0 +1,8 @@
+# uncomment the 2nd line to ignore fixes_made.md 
+# fixes_made.md
+
+
+# ignoring the build output
+/target/
+/target/classes/
+/target/test-classes/

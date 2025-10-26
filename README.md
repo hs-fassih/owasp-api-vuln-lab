@@ -19,9 +19,12 @@ mvn spring-boot:run
 
 Login to get a JWT:
 
+<!-- Send this request via postman on windows in order to get the token -->
+
 ```bash
 curl -s -X POST http://localhost:8080/api/auth/login -H 'Content-Type: application/json' -d '{"username":"alice","password":"alice123"}'
-# => {"token":"<JWT>"}
+# => {"token":"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJVU0VSIiwiaXNBZG1pbiI6ZmFsc2UsImlhdCI6MTc2MTQwOTU5OSwiZXhwIjoxNzY0MDAxNTk5fQ.feVifTCQhLe7tYfD-gSMqs5LC4kWuiLdFjep7Zn1niI"} for alice (get new JWT)
+#{"token":"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJib2IiLCJyb2xlIjoiQURNSU4iLCJpc0FkbWluIjp0cnVlLCJpYXQiOjE3NjE0MTE3NjcsImV4cCI6MTc2NDAwMzc2N30.KXD_Iyox9DvmpAXmxAZXxzgyjgbED8CRaG-jqLKbwPI"} for bob (get new JWT)
 ```
 
 Use the token:
