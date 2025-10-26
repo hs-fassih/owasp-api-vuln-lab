@@ -1,5 +1,6 @@
 package edu.nu.owaspapivulnlab.web;
 
+import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
@@ -10,6 +11,8 @@ import edu.nu.owaspapivulnlab.repo.AppUserRepository;
 // FIX(Task 4): Import DTOs for safe data exposure
 import edu.nu.owaspapivulnlab.dto.AccountResponseDTO;
 import edu.nu.owaspapivulnlab.dto.DTOMapper;
+// TASK 9 FIX: Import TransferRequest DTO for input validation
+import edu.nu.owaspapivulnlab.dto.TransferRequest;
 // TASK 8 FIX: Import custom exceptions for proper error handling
 import edu.nu.owaspapivulnlab.exception.AccessDeniedException;
 import edu.nu.owaspapivulnlab.exception.ResourceNotFoundException;
@@ -68,9 +71,14 @@ public class AccountController {
     }
 
     // FIX(Task 3): Added ownership verification and input validation to prevent BOLA/IDOR
-    // FIX(Task 9): Added input validation for transfer amount
+    // TASK 9 FIX: Enhanced input validation using TransferRequest DTO with Jakarta validation
+    // Validates: positive amounts, maximum limits, proper decimal precision
     @PostMapping("/{id}/transfer")
-    public ResponseEntity<?> transfer(@PathVariable Long id, @RequestParam Double amount, Authentication auth) {
+    public ResponseEntity<?> transfer(
+            @PathVariable Long id, 
+            @Valid @RequestBody TransferRequest transferRequest,
+            Authentication auth) {
+        
         // FIX(Task 3): Check if user is authenticated
         if (auth == null) {
             Map<String, String> error = new HashMap<>();
@@ -78,17 +86,13 @@ public class AccountController {
             return ResponseEntity.status(401).body(error);
         }
         
-        // FIX(Task 9): Validate transfer amount
-        // TASK 8 FIX: Use ValidationException for consistent error handling
-        if (amount == null || amount <= 0) {
-            throw new ValidationException("Amount must be positive");
-        }
-        
-        // FIX(Task 9): Reject excessively large transfers
-        // TASK 8 FIX: Use ValidationException for consistent error handling
-        if (amount > 1000000) {
-            throw new ValidationException("Amount exceeds maximum transfer limit of 1,000,000");
-        }
+        // TASK 9 FIX: Extract validated amount from DTO
+        // Jakarta Bean Validation already ensures:
+        // - Amount is not null
+        // - Amount >= 0.01 (prevents negative and zero)
+        // - Amount <= 1,000,000 (prevents excessive transfers)
+        // - Proper decimal format (7 integer digits, 2 fractional)
+        Double amount = transferRequest.getAmount();
         
         // FIX(Task 3): Get the authenticated user
         // TASK 8 FIX: Use ResourceNotFoundException for consistent error handling
@@ -107,10 +111,16 @@ public class AccountController {
             throw new AccessDeniedException("Access denied - you can only transfer from your own accounts");
         }
         
-        // FIX(Task 9): Check sufficient balance
+        // TASK 9 FIX: Check sufficient balance before transfer
         // TASK 8 FIX: Use ValidationException for consistent error handling
         if (account.getBalance() < amount) {
             throw new ValidationException("Insufficient balance. Available: " + account.getBalance());
+        }
+        
+        // TASK 9 FIX: Additional business rule validation
+        // Prevent suspicious small transfers that could indicate testing/enumeration
+        if (amount < 0.01) {
+            throw new ValidationException("Minimum transfer amount is 0.01");
         }
         
         // Perform transfer

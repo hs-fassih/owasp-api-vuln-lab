@@ -5,6 +5,7 @@ import lombok.*;
 
 /**
  * FIX(Task 6): Create User Request DTO to prevent mass assignment
+ * TASK 9 FIX: Enhanced with comprehensive input validation
  * This DTO only accepts safe user input fields
  * Server-side controls role and admin privileges to prevent privilege escalation
  */
@@ -14,10 +15,11 @@ import lombok.*;
 public class CreateUserRequest {
     @NotBlank(message = "Username is required")
     @Size(min = 3, max = 50, message = "Username must be between 3 and 50 characters")
+    @Pattern(regexp = "^[a-zA-Z0-9_-]+$", message = "Username can only contain letters, numbers, underscores, and hyphens")
     private String username;
     
     @NotBlank(message = "Password is required")
-    @Size(min = 8, message = "Password must be at least 8 characters")
+    @Size(min = 8, max = 128, message = "Password must be between 8 and 128 characters")
     private String password;
     
     @Email(message = "Valid email is required")

@@ -29,10 +29,15 @@ public class AuthController {
         this.passwordEncoder = passwordEncoder;
     }
 
+    /**
+     * TASK 9 FIX: Enhanced login request with validation
+     * Prevents empty or null credentials
+     */
     public static class LoginReq {
-        @NotBlank
+        @NotBlank(message = "Username is required")
         private String username;
-        @NotBlank
+        
+        @NotBlank(message = "Password is required")
         private String password;
 
         public LoginReq() {}
@@ -62,8 +67,12 @@ public class AuthController {
         public void setToken(String token) { this.token = token; }
     }
 
+    /**
+     * TASK 9 FIX: Login endpoint with input validation
+     * Validates credentials are not blank before processing
+     */
     @PostMapping("/login")
-    public ResponseEntity<?> login(@RequestBody LoginReq req) {
+    public ResponseEntity<?> login(@Valid @RequestBody LoginReq req) {
         // FIX(Task 1): Replace plaintext password comparison with BCrypt verification
         // OLD VULNERABILITY: user.getPassword().equals(req.password()) compared plaintext passwords
         // NEW: passwordEncoder.matches() securely verifies password against BCrypt hash
@@ -81,12 +90,15 @@ public class AuthController {
     }
 
     // FIX(Task 1): Add signup endpoint to allow user registration with BCrypt password hashing
+    // TASK 9 FIX: Enhanced with comprehensive input validation
     // This provides secure user registration with automatic password hashing
     public static class SignupReq {
         @NotBlank(message = "Username is required")
+        @jakarta.validation.constraints.Size(min = 3, max = 50, message = "Username must be between 3 and 50 characters")
         private String username;
         
         @NotBlank(message = "Password is required")
+        @jakarta.validation.constraints.Size(min = 8, max = 128, message = "Password must be between 8 and 128 characters")
         private String password;
         
         @Email(message = "Valid email is required")
@@ -110,8 +122,19 @@ public class AuthController {
         public void setEmail(String email) { this.email = email; }
     }
 
+    /**
+     * TASK 9 FIX: Signup endpoint with comprehensive input validation
+     * Validates username length, password strength, and email format
+     */
     @PostMapping("/signup")
     public ResponseEntity<?> signup(@Valid @RequestBody SignupReq req) {
+        // TASK 9 FIX: Additional username validation
+        if (req.getUsername().matches(".*[<>\"'].*")) {
+            Map<String, String> error = new HashMap<>();
+            error.put("error", "Username contains invalid characters");
+            return ResponseEntity.status(400).body(error);
+        }
+        
         // Check if username already exists
         if (users.findByUsername(req.getUsername()).isPresent()) {
             Map<String, String> error = new HashMap<>();

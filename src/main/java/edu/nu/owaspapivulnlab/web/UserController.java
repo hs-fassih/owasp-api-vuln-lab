@@ -114,7 +114,8 @@ public class UserController {
     }
 
     // FIX(Task 4): Return DTOs to prevent exposing sensitive user data in search results
-    // REMAINING VULNERABILITY(API9): Search still allows enumeration (will be fixed with rate limiting in Task 5)
+    // TASK 9 FIX: Enhanced with input validation to prevent injection attacks
+    // REMAINING VULNERABILITY(API9): Search still allows enumeration (mitigated by rate limiting in Task 5)
     @GetMapping("/search")
     public ResponseEntity<?> search(@RequestParam String q, Authentication auth) {
         // Require authentication for search
@@ -122,6 +123,22 @@ public class UserController {
             Map<String, String> error = new HashMap<>();
             error.put("error", "Authentication required");
             return ResponseEntity.status(401).body(error);
+        }
+        
+        // TASK 9 FIX: Validate search query input
+        if (q == null || q.trim().isEmpty()) {
+            throw new ValidationException("Search query cannot be empty");
+        }
+        
+        // TASK 9 FIX: Prevent excessively long search queries (potential DoS)
+        if (q.length() > 100) {
+            throw new ValidationException("Search query too long (max 100 characters)");
+        }
+        
+        // TASK 9 FIX: Sanitize search input to prevent SQL injection patterns
+        // Note: Since we're using Spring Data JPA with parameterized queries, this is defense-in-depth
+        if (q.matches(".*[;'\"\\\\].*")) {
+            throw new ValidationException("Search query contains invalid characters");
         }
         
         // Perform search and convert to DTOs
