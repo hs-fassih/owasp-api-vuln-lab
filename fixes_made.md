@@ -1,5 +1,11 @@
 # Security Fixes Documentation
 
+## Table of Contents
+1. [Task 1: Replace Plaintext Passwords with BCrypt](#task-1-replace-plaintext-passwords-with-bcrypt)
+2. [Task 2: Tighten SecurityFilterChain](#task-2-tighten-securityfilterchain)
+
+---
+
 ## Task 1: Replace Plaintext Passwords with BCrypt
 
 ### Overview
@@ -309,3 +315,411 @@ These will be addressed in subsequent tasks.
 **Fix Completed:** ✅ Task 1 - Replace Plaintext Passwords with BCrypt  
 **Date:** October 25, 2025  
 **Security Level:** HIGH PRIORITY - Critical authentication vulnerability fixed
+
+---
+
+## Task 2: Tighten SecurityFilterChain
+
+### Overview
+Fixed the API7 Security Misconfiguration vulnerability by removing overly permissive authentication rules and implementing proper JWT token validation. The original configuration allowed unauthenticated access to all GET endpoints, enabling data scraping and unauthorized access.
+
+### Vulnerability Description
+**OWASP API Security Category:** API7 - Security Misconfiguration
+
+**Original Issues:**
+1. **Overly Permissive GET Access:** All GET requests to `/api/**` were permitted without authentication
+   - Anonymous users could access sensitive endpoints like `/api/users/{id}`, `/api/accounts/{id}/balance`
+   - Data scraping was possible on all GET endpoints
+   - No authentication required for viewing user data
+
+2. **Silent JWT Error Handling:** Invalid or expired JWT tokens were silently ignored
+   - Failed JWT validation continued processing as anonymous user
+   - No error response sent to client
+   - Security failures were invisible to both users and administrators
+
+3. **Broad Auth Endpoint Permissions:** Entire `/api/auth/**` path was public
+   - Even hypothetical admin auth endpoints would be public
+   - No granular control over which auth endpoints are public
+
+### Changes Made
+
+#### 1. SecurityConfig.java - filterChain() Method
+**Location:** `src/main/java/edu/nu/owaspapivulnlab/config/SecurityConfig.java`
+
+**Changes Made:**
+
+##### a) Removed Dangerous permitAll on GET Requests
+**Before (VULNERABLE):**
+```java
+http.authorizeHttpRequests(reg -> reg
+    .requestMatchers("/api/auth/**", "/h2-console/**").permitAll()
+    // VULNERABILITY: broad permitAll on GET allows data scraping
+    .requestMatchers(HttpMethod.GET, "/api/**").permitAll()
+    .requestMatchers("/api/admin/**").hasRole("ADMIN")
+    .anyRequest().authenticated()
+);
+```
+
+**After (SECURE):**
+```java
+http.authorizeHttpRequests(reg -> reg
+    // FIX(Task 2): Only specific auth endpoints are public
+    .requestMatchers("/api/auth/login", "/api/auth/signup").permitAll()
+    .requestMatchers("/h2-console/**").permitAll()
+    
+    // FIX(Task 2): Admin endpoints require ADMIN role
+    .requestMatchers("/api/admin/**").hasRole("ADMIN")
+    
+    // FIX(Task 2): All other /api/** endpoints require authentication
+    .requestMatchers("/api/**").authenticated()
+    
+    .anyRequest().authenticated()
+);
+```
+
+**Security Improvements:**
+- ✅ Removed `HttpMethod.GET` permitAll rule completely
+- ✅ Changed `/api/auth/**` wildcard to specific endpoints: `/api/auth/login` and `/api/auth/signup`
+- ✅ All `/api/**` endpoints now require authentication by default
+- ✅ Proper order of matchers: specific rules before general rules
+- ✅ Admin endpoints explicitly require ADMIN role
+
+**Impact:**
+- Anonymous users can no longer access GET endpoints
+- All user data, account data, and other resources require authentication
+- Only login and signup are publicly accessible
+- Data scraping attacks are prevented
+
+---
+
+#### 2. SecurityConfig.java - JwtFilter Class
+**Location:** `src/main/java/edu/nu/owaspapivulnlab/config/SecurityConfig.java`
+
+**Changes Made:**
+
+##### a) Proper JWT Error Handling
+
+**Before (VULNERABLE):**
+```java
+try {
+    Claims c = Jwts.parserBuilder().setSigningKey(secret.getBytes()).build()
+            .parseClaimsJws(token).getBody();
+    String user = c.getSubject();
+    String role = (String) c.get("role");
+    UsernamePasswordAuthenticationToken authn = new UsernamePasswordAuthenticationToken(user, null,
+            role != null ? Collections.singletonList(new SimpleGrantedAuthority("ROLE_" + role)) : Collections.emptyList());
+    SecurityContextHolder.getContext().setAuthentication(authn);
+} catch (JwtException e) {
+    // VULNERABILITY: swallow errors; continue as anonymous (API7)
+}
+chain.doFilter(request, response);
+```
+
+**After (SECURE):**
+```java
+try {
+    // FIX(Task 2): Validate JWT token and extract claims
+    Claims c = Jwts.parserBuilder().setSigningKey(secret.getBytes()).build()
+            .parseClaimsJws(token).getBody();
+    String user = c.getSubject();
+    String role = (String) c.get("role");
+    
+    // Set authentication in security context
+    UsernamePasswordAuthenticationToken authn = new UsernamePasswordAuthenticationToken(user, null,
+            role != null ? Collections.singletonList(new SimpleGrantedAuthority("ROLE_" + role)) : Collections.emptyList());
+    SecurityContextHolder.getContext().setAuthentication(authn);
+    
+} catch (ExpiredJwtException e) {
+    // FIX(Task 2): Reject expired tokens with proper error response
+    response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+    response.setContentType("application/json");
+    response.getWriter().write("{\"error\":\"Token expired\"}");
+    return; // Stop the filter chain - don't continue as anonymous
+    
+} catch (JwtException e) {
+    // FIX(Task 2): Reject invalid tokens with proper error response
+    response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+    response.setContentType("application/json");
+    response.getWriter().write("{\"error\":\"Invalid or malformed token\"}");
+    return; // Stop the filter chain - don't continue as anonymous
+}
+chain.doFilter(request, response);
+```
+
+**Security Improvements:**
+- ✅ Separate handling for `ExpiredJwtException` with specific error message
+- ✅ Generic `JwtException` catch for other JWT validation failures
+- ✅ Returns HTTP 401 Unauthorized status code
+- ✅ Provides clear JSON error messages to clients
+- ✅ Stops filter chain execution with `return` statement
+- ✅ No longer continues processing as anonymous user
+
+**Error Responses:**
+
+For expired tokens:
+```json
+{
+  "error": "Token expired"
+}
+```
+
+For invalid/malformed tokens:
+```json
+{
+  "error": "Invalid or malformed token"
+}
+```
+
+**Impact:**
+- Failed JWT validation now properly rejects requests
+- Clients receive clear feedback about authentication failures
+- Security issues are visible and logged
+- Prevents unauthorized access via malformed tokens
+- Improves API security posture and monitoring
+
+---
+
+#### 3. Code Cleanup
+**Location:** `src/main/java/edu/nu/owaspapivulnlab/config/SecurityConfig.java`
+
+**Changes:**
+- Removed unused import: `org.springframework.http.HttpMethod`
+- Added comprehensive FIX(Task 2) comments throughout the code
+
+---
+
+### Security Benefits
+
+1. **Enforced Authentication:**
+   - All API endpoints (except login/signup) now require valid JWT tokens
+   - Eliminates anonymous data access
+   - Prevents unauthorized information disclosure
+
+2. **Explicit Error Handling:**
+   - Invalid tokens receive clear 401 Unauthorized responses
+   - Expired tokens get specific "Token expired" messages
+   - Failed authentication attempts are visible and can be logged/monitored
+
+3. **Principle of Least Privilege:**
+   - Only absolutely necessary endpoints are public (login, signup)
+   - Admin endpoints explicitly require ADMIN role
+   - Default-deny policy for all other endpoints
+
+4. **Defense in Depth:**
+   - JWT validation at filter level
+   - Spring Security authorization rules at endpoint level
+   - Multiple layers of security checks
+
+5. **Improved Security Visibility:**
+   - Authentication failures are no longer silent
+   - Clear error messages aid in debugging and monitoring
+   - Security events can be logged and audited
+
+### Testing the Fix
+
+#### Test 1: Verify Unauthenticated Access is Blocked
+
+**Test accessing user endpoint without token:**
+```powershell
+curl -X GET http://localhost:8080/api/users/1
+```
+
+**Expected Response:**
+```
+HTTP 401 Unauthorized
+(Spring Security default error page or redirect to login)
+```
+
+**Test accessing account balance without token:**
+```powershell
+curl -X GET http://localhost:8080/api/accounts/1/balance
+```
+
+**Expected Response:**
+```
+HTTP 401 Unauthorized
+```
+
+---
+
+#### Test 2: Verify Public Endpoints Still Work
+
+**Test login endpoint (should work):**
+```powershell
+curl -X POST http://localhost:8080/api/auth/login `
+  -H "Content-Type: application/json" `
+  -d '{"username":"alice","password":"alice123"}'
+```
+
+**Expected Response:**
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiJ9..."
+}
+```
+
+**Test signup endpoint (should work):**
+```powershell
+curl -X POST http://localhost:8080/api/auth/signup `
+  -H "Content-Type: application/json" `
+  -d '{"username":"newuser","password":"pass123","email":"test@example.com"}'
+```
+
+**Expected Response:**
+```json
+{
+  "status": "user created successfully",
+  "username": "newuser"
+}
+```
+
+---
+
+#### Test 3: Verify Authenticated Access Works
+
+**Get valid token:**
+```powershell
+$response = curl -X POST http://localhost:8080/api/auth/login `
+  -H "Content-Type: application/json" `
+  -d '{"username":"alice","password":"alice123"}' | ConvertFrom-Json
+
+$token = $response.token
+```
+
+**Test accessing endpoint with valid token:**
+```powershell
+curl -X GET http://localhost:8080/api/accounts/mine `
+  -H "Authorization: Bearer $token"
+```
+
+**Expected Response:**
+```json
+[
+  {
+    "id": 1,
+    "ownerUserId": 1,
+    "iban": "PK00-ALICE",
+    "balance": 1000.0
+  }
+]
+```
+
+---
+
+#### Test 4: Verify Invalid Token is Rejected
+
+**Test with malformed token:**
+```powershell
+curl -X GET http://localhost:8080/api/accounts/mine `
+  -H "Authorization: Bearer invalid.token.here"
+```
+
+**Expected Response:**
+```
+HTTP 401 Unauthorized
+Content-Type: application/json
+
+{
+  "error": "Invalid or malformed token"
+}
+```
+
+---
+
+#### Test 5: Verify Admin Endpoint Protection
+
+**Test admin endpoint as regular user:**
+```powershell
+# Login as alice (USER role)
+$response = curl -X POST http://localhost:8080/api/auth/login `
+  -H "Content-Type: application/json" `
+  -d '{"username":"alice","password":"alice123"}' | ConvertFrom-Json
+
+# Try to access admin endpoint
+curl -X GET http://localhost:8080/api/admin/metrics `
+  -H "Authorization: Bearer $($response.token)"
+```
+
+**Expected Response:**
+```
+HTTP 403 Forbidden
+```
+
+**Test admin endpoint as admin user:**
+```powershell
+# Login as bob (ADMIN role)
+$response = curl -X POST http://localhost:8080/api/auth/login `
+  -H "Content-Type: application/json" `
+  -d '{"username":"bob","password":"bob123"}' | ConvertFrom-Json
+
+# Access admin endpoint
+curl -X GET http://localhost:8080/api/admin/metrics `
+  -H "Authorization: Bearer $($response.token)"
+```
+
+**Expected Response:**
+```json
+{
+  "uptimeMs": 12345,
+  "javaVersion": "17.0.x",
+  "threads": 25
+}
+```
+
+---
+
+### Comparison: Before vs After
+
+| Scenario | Before (Vulnerable) | After (Fixed) |
+|----------|-------------------|---------------|
+| GET /api/users/1 (no token) | ✅ Allowed | ❌ 401 Unauthorized |
+| GET /api/accounts/1/balance (no token) | ✅ Allowed | ❌ 401 Unauthorized |
+| POST /api/auth/login | ✅ Allowed | ✅ Allowed |
+| POST /api/auth/signup | ✅ Allowed | ✅ Allowed |
+| Invalid JWT token | ⚠️ Silent failure → Anonymous | ❌ 401 with error message |
+| Expired JWT token | ⚠️ Silent failure → Anonymous | ❌ 401 "Token expired" |
+| GET /api/admin/metrics (USER role) | ❌ Blocked | ❌ 403 Forbidden |
+| GET /api/admin/metrics (ADMIN role) | ✅ Allowed | ✅ Allowed |
+| Any /api/** with valid token | ✅ Allowed | ✅ Allowed |
+
+---
+
+### Remaining Vulnerabilities (Future Tasks)
+
+While Task 2 fixes authorization and authentication enforcement, the following issues remain:
+
+1. **No Rate Limiting** - Endpoints are still vulnerable to brute force and DoS attacks (Task 5)
+2. **Weak JWT Configuration** - Token TTL is still too long, weak secret (Task 7)
+3. **BOLA/IDOR Issues** - Controllers don't verify resource ownership (Task 3)
+4. **Excessive Data Exposure** - Responses still include sensitive fields (Task 4)
+5. **Mass Assignment** - Input validation and DTOs needed (Task 6)
+
+These will be addressed in subsequent tasks.
+
+---
+
+### Files Modified Summary
+
+1. ✅ `SecurityConfig.java` - Tightened authorization rules and fixed JWT error handling
+
+### Architecture Changes
+
+**Before:**
+```
+Request → JWT Filter (silent failure) → permitAll GET /api/** → Controller
+                ↓
+           Anonymous Access Allowed
+```
+
+**After:**
+```
+Request → JWT Filter (rejects invalid) → authenticated /api/** → Controller
+                ↓                               ↓
+         401 if invalid              403 if no permission
+```
+
+---
+
+**Fix Completed:** ✅ Task 2 - Tighten SecurityFilterChain  
+**Date:** October 26, 2025  
+**Security Level:** HIGH PRIORITY - Critical authorization and authentication vulnerability fixed
